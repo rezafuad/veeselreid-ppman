@@ -18,10 +18,10 @@ def make_data_loader(cfg):
     val_transforms = build_transforms(cfg, is_train=False)
     num_workers = cfg.DATALOADER.NUM_WORKERS
     if len(cfg.DATASETS.NAMES) == 1:
-        dataset = init_dataset(cfg.DATASETS.NAMES, root=cfg.DATASETS.ROOT_DIR, att_root=cfg.DATASETS.ATT_ROOT_DIR)
+        dataset = init_dataset(cfg.DATASETS.NAMES, root=cfg.DATASETS.ROOT_DIR, att_root=cfg.DATASETS.ATTR_ROOT_DIR)
     else:
         # TODO: add multi dataset to train
-        dataset = init_dataset(cfg.DATASETS.NAMES, root=cfg.DATASETS.ROOT_DIR, att_root=cfg.DATASETS.ATT_ROOT_DIR)
+        dataset = init_dataset(cfg.DATASETS.NAMES, root=cfg.DATASETS.ROOT_DIR, att_root=cfg.DATASETS.ATTR_ROOT_DIR)
 
     num_classes = dataset.num_train_pids
     if len(dataset.train[0]) == 4:
