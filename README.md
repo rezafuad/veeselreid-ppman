@@ -2,6 +2,8 @@
 
 Reza Fuad Rachmadi, Anggit Wikanningrum, Khusnul Muchlisin, I Ketut Eddy Purnama
 
+Paper Link: https://doi.org/10.1016/j.ijcce.2026.05.006
+
 ## Abstract
 
 In vessel traffic management systems, an Automatic Identification System (AIS) is usually used to track vessel positions and control 
@@ -23,3 +25,21 @@ some vessel parts and can distinguish between vessel IDs.
 ## Comparison with SOTA
 
 ![Comparison with SOTA](./comparison-sota.png)
+
+
+## Training 
+
+To do
+
+## Testing
+
+To do
+
+## Pretrained Weights
+
+To do
+
+## Credits
+
+Code is derived from [MultiModal Vehicle ReID](https://github.com/ttaalle/multi-modal-vehicle-Re-ID). The original README.md can be accessed from the README_ORIGINAL.md file.
+
