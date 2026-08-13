@@ -14,6 +14,8 @@ from .backbones.densenet import _DenseLayer, _DenseBlock, _Transition, DenseNet
 from .backbones.mobilenet import ConvBNReLU, InvertedResidual, MobileNetV2
 from .backbones.inception import Inception3, BasicConv2d
 
+import timm
+
 import math
 from torch.nn.parameter import Parameter
 from torch.nn.modules.module import Module
@@ -39,124 +41,85 @@ def weights_init_classifier(m):
     classname = m.__class__.__name__
     if classname.find('Linear') != -1:
         nn.init.normal_(m.weight, std=0.001)
-        if m.bias:
-            nn.init.constant_(m.bias, 0.0)
+        #nn.init.constant_(m.bias, 0.0)
+
+def get_base_model(model_name):
+    base = None 
+    in_planes = 288
+
+    # MambaOut Classifier
+    if model_name == 'mambaout_base':
+        base = timm.create_model('mambaout_base.in1k', pretrained=True) 
+        base.head = nn.Identity()
+        in_planes = 768
+    elif model_name == 'mambaout_small':
+        base = timm.create_model('mambaout_small.in1k', pretrained=True) 
+        base.head = nn.Identity()
+        in_planes = 576
+    elif model_name == 'mambaout_tiny':
+        base = timm.create_model('mambaout_tiny.in1k', pretrained=True) 
+        base.head = nn.Identity()
+        in_planes = 576
+    elif model_name == 'mambaout_kobe':
+        base = timm.create_model('mambaout_kobe.in1k', pretrained=True) 
+        base.head = nn.Identity()
+        in_planes = 288
+    elif model_name == 'mambaout_femto':
+        base = timm.create_model('mambaout_femto.in1k', pretrained=True) 
+        base.head = nn.Identity()
+        in_planes = 288
+    elif model_name == 'mambaout_base_plus':
+        base = timm.create_model('mambaout_base_plus_rw.sw_e150_r384_in12k_ft_in1k', pretrained=True)
+        base.head = nn.Identity()
+        in_planes = 768
+
+    # SwinTransformer
+    if model_name == "swinv2_transformer":
+        base = timm.create_model("swinv2_base_window12to16_192to256.ms_in22k_ft_in1k", pretrained=True)
+        base.head = nn.Identity()
+        in_planes = 1024
+    elif model_name == "swinv2large_transformer":
+        base = timm.create_model("swinv2_large_window12to16_192to256.ms_in22k_ft_in1k", pretrained=True)
+        base.head = nn.Identity()
+        in_planes = 1536
+
+    # ViTamin
+    if model_name == "vitamin_base":
+        base = timm.create_model("vitamin_base_224", pretrained=True)
+        base.head = nn.Identity()
+        in_planes = 768
+
+    # NaFlex
+    if model_name == "naflex_base":
+        base = timm.create_model("naflexvit_base_patch16_gap.e300_s576_in1k", pretrained=True)
+        base.head = nn.Identity()
+        in_planes = 768
+
+    if model_name == "vit_so150m2":
+        base = timm.create_model("vit_so150m2_patch16_reg1_gap_384.sbb_e200_in12k_ft_in1k", pretrained=True)
+        base.head = nn.Identity()
+        in_planes = 832
+
+    return base, in_planes
+
 
 
 class Baseline(nn.Module):
     in_planes = 2048
 
-    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice):
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choicei, modality):
         super(Baseline, self).__init__()
-        if model_name == 'resnet18':
-            self.in_planes = 512
-            self.base = ResNet(last_stride=last_stride, 
-                               block=BasicBlock, 
-                               layers=[2, 2, 2, 2])
-        elif model_name == 'resnet34':
-            self.in_planes = 512
-            self.base = ResNet(last_stride=last_stride,
-                               block=BasicBlock,
-                               layers=[3, 4, 6, 3])
-        elif model_name == 'resnet50':
-            self.base  = ResNet(last_stride=last_stride,
-                               block=Bottleneck,
-                               layers=[3, 4, 6, 3])
-        elif model_name == 'resnet101':
-            self.base = ResNet(last_stride=last_stride,
-                               block=Bottleneck, 
-                               layers=[3, 4, 23, 3])
-        elif model_name == 'resnet152':
-            self.base = ResNet(last_stride=last_stride, 
-                               block=Bottleneck,
-                               layers=[3, 8, 36, 3])
-            
-        elif model_name == 'se_resnet50':
-            self.base = SENet(block=SEResNetBottleneck, 
-                              layers=[3, 4, 6, 3], 
-                              groups=1, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride) 
-        elif model_name == 'se_resnet101':
-            self.base = SENet(block=SEResNetBottleneck, 
-                              layers=[3, 4, 23, 3], 
-                              groups=1, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride)
-        elif model_name == 'se_resnet152':
-            self.base = SENet(block=SEResNetBottleneck, 
-                              layers=[3, 8, 36, 3],
-                              groups=1, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride)  
-        elif model_name == 'se_resnext50':
-            self.base = SENet(block=SEResNeXtBottleneck,
-                              layers=[3, 4, 6, 3], 
-                              groups=32, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride) 
-        elif model_name == 'se_resnext101':
-            self.base = SENet(block=SEResNeXtBottleneck,
-                              layers=[3, 4, 23, 3], 
-                              groups=32, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride)
-        elif model_name == 'senet154':
-            self.base = SENet(block=SEBottleneck, 
-                              layers=[3, 8, 36, 3],
-                              groups=64, 
-                              reduction=16,
-                              dropout_p=0.2, 
-                              last_stride=last_stride)
-        elif model_name == 'squeezenet':
-             self.in_planes = 512
-             self.base = SqueezeNet()
-        elif model_name == 'densenet':
-             self.in_planes = 1024
-             self.base = DenseNet()
-        elif model_name == 'mobilenet':
-             self.in_planes = 1280
-             self.base = MobileNetV2()
-        elif model_name == 'inception':
-             self.in_planes = 2048
-             self.base = Inception3()
 
-        if pretrain_choice == 'imagenet':
-            self.base.load_param(model_path)
-            print('Loading pretrained ImageNet model......')
-            
+        self.base, self.in_planes = get_base_model(model_name)
+        self.model_name = model_name
+
         self.conv1 = nn.Conv2d(self.in_planes, num_classes, kernel_size=1, bias=False)
         self.gap = nn.AdaptiveAvgPool2d(1)
         # self.gap = nn.AdaptiveMaxPool2d(1)
         self.num_classes = num_classes
         self.neck = neck
         self.neck_feat = neck_feat
-        
+        self.modality = modality
 
         if self.neck == 'no':
             self.classifier = nn.Linear(self.in_planes, self.num_classes)
@@ -171,23 +134,17 @@ class Baseline(nn.Module):
             self.classifier.apply(weights_init_classifier)
 
     def forward(self, x):
+       
+        x = self.base(x)
         
-        #y1 = x[:,0:1,:,:]*0.299+x[:,1:2,:,:]*0.587+x[:,2:3,:,:]*0.114
-        #y = x
-        #y[:,0:1,:,:] = y1
-        #y[:,1:2,:,:] = y1
-        #y[:,2:3,:,:] = y1
-       # a=torch.ones(64,2048,8,16)
-       # a[:,:,3:5,6:10]=0
-      #  pdb.set_trace()
-      #  a = torch.ones(1,1,8,16)
-       # a[:,:,2:5,2:14]=0
-      #  global_feat1 = self.gap(self.base(x)*a.cuda())  # (b, 2048, 1, 1)
-        #pdb.set_trace()
-        global_feat1 = self.gap(self.base(x))
-        global_feat1 = global_feat1.view(global_feat1.shape[0], -1)
-       # global_feat1 = global_feat1.view(global_feat1.shape[0], -1)  # flatten to (bs, 2048)
-        #pdb.set_trace()
+        if len(x.shape) > 2:
+            global_feat1 = self.gap( torch.permute( x, (0, 3, 1, 2) ) )
+            #pdb.set_trace()
+            global_feat1 = global_feat1.view(global_feat1.shape[0], -1)
+            #pdb.set_trace()
+        else:
+            global_feat1 = x
+
         #global_feat2 = self.gap(self.base(y))  # (b, 2048, 1, 1)
         #global_feat2 = global_feat2.view(global_feat2.shape[0], -1)  # flatten to (bs, 2048)  
         
@@ -218,118 +175,27 @@ class Baseline(nn.Module):
                 return global_feat
 
     def load_param(self, trained_path):
-        param_dict = torch.load(trained_path)
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
         for i in param_dict:
+            #print(i)
             if 'classifier' in i:
                 continue
             self.state_dict()[i].copy_(param_dict[i])
+        ###
 
-class Baseline1(nn.Module):
+
+
+
+
+class StatPool(nn.Module):
     in_planes = 2048
 
-    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice):
-        super(Baseline1, self).__init__()
-        if model_name == 'resnet18':
-            self.in_planes = 512
-            self.base = ResNet(last_stride=last_stride, 
-                               block=BasicBlock, 
-                               layers=[2, 2, 2, 2])
-        elif model_name == 'resnet34':
-            self.in_planes = 512
-            self.base = ResNet(last_stride=last_stride,
-                               block=BasicBlock,
-                               layers=[3, 4, 6, 3])
-        elif model_name == 'resnet50':
-            self.base  = ResNet(last_stride=last_stride,
-                               block=Bottleneck,
-                               layers=[3, 4, 6, 3])
-        elif model_name == 'resnet101':
-            self.base = ResNet(last_stride=last_stride,
-                               block=Bottleneck, 
-                               layers=[3, 4, 23, 3])
-        elif model_name == 'resnet152':
-            self.base = ResNet(last_stride=last_stride, 
-                               block=Bottleneck,
-                               layers=[3, 8, 36, 3])
-            
-        elif model_name == 'se_resnet50':
-            self.base = SENet(block=SEResNetBottleneck, 
-                              layers=[3, 4, 6, 3], 
-                              groups=1, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride) 
-        elif model_name == 'se_resnet101':
-            self.base = SENet(block=SEResNetBottleneck, 
-                              layers=[3, 4, 23, 3], 
-                              groups=1, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride)
-        elif model_name == 'se_resnet152':
-            self.base = SENet(block=SEResNetBottleneck, 
-                              layers=[3, 8, 36, 3],
-                              groups=1, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride)  
-        elif model_name == 'se_resnext50':
-            self.base = SENet(block=SEResNeXtBottleneck,
-                              layers=[3, 4, 6, 3], 
-                              groups=32, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride) 
-        elif model_name == 'se_resnext101':
-            self.base = SENet(block=SEResNeXtBottleneck,
-                              layers=[3, 4, 23, 3], 
-                              groups=32, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride)
-        elif model_name == 'senet154':
-            self.base = SENet(block=SEBottleneck, 
-                              layers=[3, 8, 36, 3],
-                              groups=64, 
-                              reduction=16,
-                              dropout_p=0.2, 
-                              last_stride=last_stride)
-        elif model_name == 'squeezenet':
-             self.in_planes = 512
-             self.base = SqueezeNet()
-        elif model_name == 'densenet':
-             self.in_planes = 1024
-             self.base = DenseNet()
-        elif model_name == 'mobilenet':
-             self.in_planes = 1280
-             self.base = MobileNetV2()
-        elif model_name == 'inception':
-             self.in_planes = 2048
-             self.base = Inception3()
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choicei, modality):
+        super(StatPool, self).__init__()
 
-        if pretrain_choice == 'imagenet':
-            self.base.load_param(model_path)
-            print('Loading pretrained ImageNet model......')
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
 
         self.conv1 = nn.Conv2d(self.in_planes, num_classes, kernel_size=1, bias=False)
         self.gap = nn.AdaptiveAvgPool2d(1)
@@ -337,802 +203,521 @@ class Baseline1(nn.Module):
         self.num_classes = num_classes
         self.neck = neck
         self.neck_feat = neck_feat
+        self.modality = modality
 
         if self.neck == 'no':
-            self.classifier = nn.Linear(self.in_planes, self.num_classes)
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)
             # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
             # self.classifier.apply(weights_init_classifier)  # new add by luo
         elif self.neck == 'bnneck':
-            self.bottleneck = nn.BatchNorm1d(self.in_planes)
+            self.bottleneck = nn.BatchNorm1d(self.in_planes*2)
             self.bottleneck.bias.requires_grad_(False)  # no shift
-            self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes, bias=False)
+
+            self.bottleneck.apply(weights_init_kaiming)
+            self.classifier.apply(weights_init_classifier)
+        print(self)
+
+    def forward(self, x):
+       
+        x = self.base.forward_features(x)
+        #pdb.set_trace()
+
+        # simple statistic pooling
+        if len(x.shape) > 3:
+            x = torch.permute( x, (0, 3, 1, 2) )
+            mean = torch.mean( x, [2,3] )
+            #pdb.set_trace()
+            std = torch.std( x, [2,3] )
+            global_feat1 = self.gap( x )
+            global_feat1 = global_feat1.view(global_feat1.shape[0], -1)
+        elif len(x.shape) == 3:
+            x = x[:, self.base.num_prefix_tokens:]
+            x = torch.permute( x, (0, 2, 1) )
+            mean = torch.mean( x, 2 )
+            std = torch.std( x, 2 )
+            global_feat1 = self.gap( x.view(x.shape[0], x.shape[1], x.shape[2], 1 ) )
+            global_feat1 = global_feat1.view(global_feat1.shape[0], -1)
+        global_feat = torch.cat( (global_feat1, mean, std), 1 )
+
+        if self.neck == 'no':
+            feat = global_feat
+        elif self.neck == 'bnneck':
+            #feat = self.bottleneck(global_feat)  # normalize for angular softmax
+             feat = global_feat
+        #pdb.set_trace()
+
+        if self.training:
+            cls_score = self.classifier(feat)
+            return cls_score, global_feat  # global feature for triplet loss
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return global_feat
+
+    def load_param(self, trained_path):
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
+        for i in param_dict:
+            #print(i)
+            if 'classifier' in i:
+                continue
+            self.state_dict()[i].copy_(param_dict[i])
+        ###
+
+
+"""
+Attention Code taken from https://github.com/KrishnaDN/Attentive-Statistics-Pooling-for-Deep-Speaker-Embedding/blob/master/modules/Attention_Pooling.py
+"""
+class Classic_Attention(nn.Module):
+    def __init__(self,input_dim, embed_dim, attn_dropout=0.0):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.attn_dropout = attn_dropout
+        self.lin_proj = nn.Linear(input_dim,embed_dim)
+        self.v = torch.nn.Parameter(torch.randn(embed_dim))
+                                                        
+    def forward(self,inputs):
+        pdb.set_trace()
+        lin_out = self.lin_proj(inputs)
+        v_view = self.v.unsqueeze(0).expand(lin_out.size(0), len(self.v)).unsqueeze(2)
+        attention_weights = F.tanh(lin_out.bmm(v_view).squeeze())
+        attention_weights_normalized = F.softmax(attention_weights,1)
+        return attention_weights_normalized
+
+# Defines the new fc layer and classification layer
+# |--Linear--|--bn--|--relu--|--Linear--|
+class ClassBlock(nn.Module):
+    def __init__(self, input_dim, class_num, droprate, relu=False, bnorm=True, linear=512, return_f = False):
+        super(ClassBlock, self).__init__()
+        self.return_f = return_f
+        add_block = []
+        if linear>0:
+            add_block += [nn.Linear(input_dim, linear)]
+        else:
+            linear = input_dim
+        if bnorm:
+            add_block += [nn.BatchNorm1d(linear)]
+        if relu:
+            add_block += [nn.LeakyReLU(0.1)]
+        if droprate>0:
+            add_block += [nn.Dropout(p=droprate)]
+        add_block = nn.Sequential(*add_block)
+        add_block.apply(weights_init_kaiming)
+
+        classifier = []
+        classifier += [nn.Linear(linear, class_num)]
+        classifier = nn.Sequential(*classifier)
+        classifier.apply(weights_init_classifier)
+
+        self.add_block = add_block
+        self.classifier = classifier
+    def forward(self, x):
+        x = self.add_block(x)
+        if self.return_f:
+            f = x
+            x = self.classifier(x)
+            return [x,f]
+        else:
+            x = self.classifier(x)
+            return x
+##################################
+
+
+
+class StatPoolWAtt(nn.Module):
+    in_planes = 2048
+
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choicei, modality):
+        super(StatPoolWAtt, self).__init__()
+
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
+
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        # self.gap = nn.AdaptiveMaxPool2d(1)
+        self.num_classes = num_classes
+        self.neck = neck
+        self.neck_feat = neck_feat
+        self.modality = modality
+
+        # attetion module
+        self.lin_proj = nn.Linear(self.in_planes, self.in_planes)
+        self.v = torch.nn.Parameter(torch.randn(self.in_planes))
+        #pdb.set_trace()
+        nn.init.normal_(self.v, std=0.001)
+
+        if self.neck == 'no':
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)
+            # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
+            # self.classifier.apply(weights_init_classifier)  # new add by luo
+        elif self.neck == 'bnneck':
+            self.classifier = ClassBlock(self.in_planes*3, self.num_classes, droprate=0.5, return_f = True)
+
+            #self.bottleneck.apply(weights_init_kaiming)
+            #self.classifier.apply(weights_init_classifier)
+        print(self)
+
+    def forward(self, x):
+       
+        x = self.base.forward_features(x)
+        x_pool = self.gap( torch.permute(x, (0,3,1,2)) )
+        #pdb.set_trace()
+
+        # attetion statistic pooling
+        x = self.lin_proj( x )
+        bs, w, h, nfeat = x.shape
+        ## adjust the size of parameter
+        x = x.view(bs, w*h, nfeat)
+        v_view = self.v.unsqueeze(0).expand(x.size(0), len(self.v)).unsqueeze(2)
+        att_weights = F.relu(x).bmm(v_view)
+        att_weights = F.softmax(att_weights, 1)
+        ## muliply weights with input
+        mat_prod = torch.mul(x, att_weights.expand_as(x))
+        mean = torch.mean( mat_prod, 1 )
+        hadmard_prod = torch.mul(x, mat_prod)
+        variance = torch.sum(hadmard_prod, 1) - torch.mul(mean, mean)
+        global_feat = torch.cat((x_pool.view(x_pool.shape[0], x_pool.shape[1]), mean, variance), 1)
+
+        #pdb.set_trace()
+
+        if self.training:
+            if self.neck == 'no':
+                feat = global_feat
+                cls_score = self.classifier(feat)
+                return cls_score, global_feat  # global feature for triplet loss
+ 
+            elif self.neck == 'bnneck':
+                cls_score, feat = self.classifier(global_feat)
+                return cls_score, feat
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                _, feat = self.classifier(global_feat)
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return global_feat
+
+    def load_param(self, trained_path):
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
+        for i in param_dict:
+            #print(i)
+            if 'classifier' in i:
+                continue
+            self.state_dict()[i].copy_(param_dict[i])
+        ###
+
+
+
+#################################################################################################################################
+
+from timm.models._efficientnet_blocks import SqueezeExcite, ConvBnAct, DepthwiseSeparableConv
+from timm.models._efficientnet_blocks import MobileAttention
+
+class BaselineV2(nn.Module):
+    in_planes = 2048
+
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choicei, modality, num_attns=3):
+        super(BaselineV2, self).__init__()
+
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
+
+        self.num_attns = num_attns
+        self.attns = nn.ModuleList()
+        for i in range(self.num_attns):
+            self.attns.append(MobileAttention(1024,1024))
+        
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        # self.gap = nn.AdaptiveMaxPool2d(1)
+        self.num_classes = num_classes
+        self.neck = neck
+        self.neck_feat = neck_feat
+        self.modality = modality
+
+        if self.neck == 'no':
+            self.classifier = nn.Linear(self.in_planes*2, self.num_classes)
+            # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
+            # self.classifier.apply(weights_init_classifier)  # new add by luo
+        elif self.neck == 'bnneck':
+            self.bottleneck = nn.BatchNorm1d(self.in_planes*2)
+            self.bottleneck.bias.requires_grad_(False)  # no shift
+            self.classifier = nn.Linear(self.in_planes*2, self.num_classes)#, bias=False)
 
             self.bottleneck.apply(weights_init_kaiming)
             self.classifier.apply(weights_init_classifier)
 
     def forward(self, x):
-        
-        #y1 = x[:,0:1,:,:]*0.299+x[:,1:2,:,:]*0.587+x[:,2:3,:,:]*0.114
-        #y = x
-        #y[:,0:1,:,:] = y1
-        #y[:,1:2,:,:] = y1
-        #y[:,2:3,:,:] = y1
-        f = self.conv1(self.base(x))
-        global_feat1 = self.gap(self.base(x))  # (b, 2048, 1, 1)
-        global_feat1 = global_feat1.view(global_feat1.shape[0], -1)  # flatten to (bs, 2048)
-        
-        #global_feat2 = self.gap(self.base(y))  # (b, 2048, 1, 1)
-        #global_feat2 = global_feat2.view(global_feat2.shape[0], -1)  # flatten to (bs, 2048)  
-        
-
-
-        #global_feat =  torch.cat((global_feat1,global_feat2),1)    
+       
+        x = self.base(x)
+        x = torch.permute(x, (0,3,1,2))
         #pdb.set_trace()
-        #global_feat = global_feat1 * global_feat2
-        global_feat = global_feat1
-        #global_feat = self.gap(self.base(y))  # (b, 2048, 1, 1)
-        #global_feat = global_feat.view(global_feat.shape[0], -1)  # flatten to (bs, 2048)
-        if self.neck == 'no':
-            feat = global_feat
-        elif self.neck == 'bnneck':
-            feat = self.bottleneck(global_feat)  # normalize for angular softmax
-            #feat = global_feat
 
-        return feat,f
+        x_ = x
+        for att in self.attns:
+            x_ = x_ + att(x_)
+        feat = torch.cat( ( self.gap(x).view(x.shape[0], x.shape[1]), self.gap(x_).view(x.shape[0], x.shape[1]) ), dim=1 )
+
+        #if self.neck == 'no':
+        #    feat = torch.cat( (global_feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+        #el
+        #if self.neck == 'bnneck':
+        #    feat = self.bottleneck(feat)  # normalize for angular softmax
+        #    #feat = torch.cat( (feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+            
+        if self.training:
+            cls_score = self.classifier(feat)
+            return cls_score, feat  # global feature for triplet loss
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return feat
 
     def load_param(self, trained_path):
-        param_dict = torch.load(trained_path)
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
         for i in param_dict:
+            #print(i)
             if 'classifier' in i:
                 continue
             self.state_dict()[i].copy_(param_dict[i])
-            
-class Baseline2(nn.Module):
+        ###
+
+
+from timm.layers.global_context import GlobalContext
+
+class BaselineV3(nn.Module):
     in_planes = 2048
 
-    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice):
-        super(Baseline2, self).__init__()
-        if model_name == 'resnet18':
-            self.in_planes = 512
-            self.base = ResNet(last_stride=last_stride, 
-                               block=BasicBlock, 
-                               layers=[2, 2, 2, 2])
-        elif model_name == 'resnet34':
-            self.in_planes = 512
-            self.base = ResNet(last_stride=last_stride,
-                               block=BasicBlock,
-                               layers=[3, 4, 6, 3])
-        elif model_name == 'resnet50':
-            self.base  = ResNet(last_stride=last_stride,
-                               block=Bottleneck,
-                               layers=[3, 4, 6, 3])
-        elif model_name == 'resnet101':
-            self.base = ResNet(last_stride=last_stride,
-                               block=Bottleneck, 
-                               layers=[3, 4, 23, 3])
-        elif model_name == 'resnet152':
-            self.base = ResNet(last_stride=last_stride, 
-                               block=Bottleneck,
-                               layers=[3, 8, 36, 3])
-            
-        elif model_name == 'se_resnet50':
-            self.base = SENet(block=SEResNetBottleneck, 
-                              layers=[3, 4, 6, 3], 
-                              groups=1, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride) 
-        elif model_name == 'se_resnet101':
-            self.base = SENet(block=SEResNetBottleneck, 
-                              layers=[3, 4, 23, 3], 
-                              groups=1, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride)
-        elif model_name == 'se_resnet152':
-            self.base = SENet(block=SEResNetBottleneck, 
-                              layers=[3, 8, 36, 3],
-                              groups=1, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride)  
-        elif model_name == 'se_resnext50':
-            self.base = SENet(block=SEResNeXtBottleneck,
-                              layers=[3, 4, 6, 3], 
-                              groups=32, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride) 
-        elif model_name == 'se_resnext101':
-            self.base = SENet(block=SEResNeXtBottleneck,
-                              layers=[3, 4, 23, 3], 
-                              groups=32, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride)
-        elif model_name == 'senet154':
-            self.base = SENet(block=SEBottleneck, 
-                              layers=[3, 8, 36, 3],
-                              groups=64, 
-                              reduction=16,
-                              dropout_p=0.2, 
-                              last_stride=last_stride)
-        elif model_name == 'squeezenet':
-             self.in_planes = 512
-             self.base = SqueezeNet()
-        elif model_name == 'densenet':
-             self.in_planes = 1024
-             self.base = DenseNet()
-        elif model_name == 'mobilenet':
-             self.in_planes = 1280
-             self.base = MobileNetV2()
-        elif model_name == 'inception':
-             self.in_planes = 2048
-             self.base = Inception3()
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choicei, modality, num_attns=3):
+        super(BaselineV3, self).__init__()
 
-        if pretrain_choice == 'imagenet':
-            self.base.load_param(model_path)
-            print('Loading pretrained ImageNet model......')
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
 
-        self.conv1 = nn.Conv2d(self.in_planes, num_classes, kernel_size=1, bias=False)
+        self.num_attns = num_attns
+        self.attns = nn.ModuleList()
+        for i in range(self.num_attns):
+            self.attns.append(GlobalContext(1024))
+        
         self.gap = nn.AdaptiveAvgPool2d(1)
         # self.gap = nn.AdaptiveMaxPool2d(1)
         self.num_classes = num_classes
         self.neck = neck
         self.neck_feat = neck_feat
+        self.modality = modality
 
         if self.neck == 'no':
-            self.classifier = nn.Linear(self.in_planes, self.num_classes)
+            self.classifier = nn.Linear(self.in_planes*2, self.num_classes)
             # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
             # self.classifier.apply(weights_init_classifier)  # new add by luo
         elif self.neck == 'bnneck':
-            self.bottleneck = nn.BatchNorm1d(self.in_planes)
+            self.bottleneck = nn.BatchNorm1d(self.in_planes*2)
             self.bottleneck.bias.requires_grad_(False)  # no shift
-            self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)
+            self.classifier = nn.Linear(self.in_planes*2, self.num_classes)#, bias=False)
 
             self.bottleneck.apply(weights_init_kaiming)
             self.classifier.apply(weights_init_classifier)
 
     def forward(self, x):
-        
-        #y1 = x[:,0:1,:,:]*0.299+x[:,1:2,:,:]*0.587+x[:,2:3,:,:]*0.114
-        #y = x
-        #y[:,0:1,:,:] = y1
-        #y[:,1:2,:,:] = y1
-        #y[:,2:3,:,:] = y1
-        f = self.conv1(self.base(x))
-        global_feat1 = self.gap(self.base(x))  # (b, 2048, 1, 1)
-        global_feat1 = global_feat1.view(global_feat1.shape[0], -1)  # flatten to (bs, 2048)
-        
-        #global_feat2 = self.gap(self.base(y))  # (b, 2048, 1, 1)
-        #global_feat2 = global_feat2.view(global_feat2.shape[0], -1)  # flatten to (bs, 2048)  
-        
-
-
-        #global_feat =  torch.cat((global_feat1,global_feat2),1)    
+       
+        x = self.base(x)
+        x = torch.permute(x, (0,3,1,2))
         #pdb.set_trace()
-        #global_feat = global_feat1 * global_feat2
-        global_feat = global_feat1
-        #global_feat = self.gap(self.base(y))  # (b, 2048, 1, 1)
-        #global_feat = global_feat.view(global_feat.shape[0], -1)  # flatten to (bs, 2048)
-        if self.neck == 'no':
-            feat = global_feat
-        elif self.neck == 'bnneck':
-            feat = self.bottleneck(global_feat)  # normalize for angular softmax
-            #feat = global_feat
 
-        return feat, f
+        x_ = x
+        #pdb.set_trace()
+        for att in self.attns:
+            x_ = x_ + att(x_)
+        feat = torch.cat( ( self.gap(x).view(x.shape[0], x.shape[1]), self.gap(x_).view(x.shape[0], x.shape[1]) ), dim=1 )
+
+        #if self.neck == 'no':
+        #    feat = torch.cat( (global_feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+        #el
+        #if self.neck == 'bnneck':
+        #feat = self.bottleneck(feat)  # normalize for angular softmax
+        #    #feat = torch.cat( (feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+            
+        if self.training:
+            cls_score = self.classifier(feat)
+            return cls_score, feat  # global feature for triplet loss
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return feat
 
     def load_param(self, trained_path):
-        param_dict = torch.load(trained_path)
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
         for i in param_dict:
+            #print(i)
             if 'classifier' in i:
                 continue
             self.state_dict()[i].copy_(param_dict[i])
+        ###
 
-class Baseline3(nn.Module):
+
+
+from timm.layers.gather_excite import GatherExcite 
+
+class BaselineV4(nn.Module):
     in_planes = 2048
 
-    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice):
-        super(Baseline3, self).__init__()
-        if model_name == 'resnet18':
-            self.in_planes = 512
-            self.base = ResNet(last_stride=last_stride, 
-                               block=BasicBlock, 
-                               layers=[2, 2, 2, 2])
-        elif model_name == 'resnet34':
-            self.in_planes = 512
-            self.base = ResNet(last_stride=last_stride,
-                               block=BasicBlock,
-                               layers=[3, 4, 6, 3])
-        elif model_name == 'resnet50':
-            self.base  = ResNet(last_stride=last_stride,
-                               block=Bottleneck,
-                               layers=[3, 4, 6, 3])
-        elif model_name == 'resnet101':
-            self.base = ResNet(last_stride=last_stride,
-                               block=Bottleneck, 
-                               layers=[3, 4, 23, 3])
-        elif model_name == 'resnet152':
-            self.base = ResNet(last_stride=last_stride, 
-                               block=Bottleneck,
-                               layers=[3, 8, 36, 3])
-            
-        elif model_name == 'se_resnet50':
-            self.base = SENet(block=SEResNetBottleneck, 
-                              layers=[3, 4, 6, 3], 
-                              groups=1, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride) 
-        elif model_name == 'se_resnet101':
-            self.base = SENet(block=SEResNetBottleneck, 
-                              layers=[3, 4, 23, 3], 
-                              groups=1, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride)
-        elif model_name == 'se_resnet152':
-            self.base = SENet(block=SEResNetBottleneck, 
-                              layers=[3, 8, 36, 3],
-                              groups=1, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride)  
-        elif model_name == 'se_resnext50':
-            self.base = SENet(block=SEResNeXtBottleneck,
-                              layers=[3, 4, 6, 3], 
-                              groups=32, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride) 
-        elif model_name == 'se_resnext101':
-            self.base = SENet(block=SEResNeXtBottleneck,
-                              layers=[3, 4, 23, 3], 
-                              groups=32, 
-                              reduction=16,
-                              dropout_p=None, 
-                              inplanes=64, 
-                              input_3x3=False,
-                              downsample_kernel_size=1, 
-                              downsample_padding=0,
-                              last_stride=last_stride)
-        elif model_name == 'senet154':
-            self.base = SENet(block=SEBottleneck, 
-                              layers=[3, 8, 36, 3],
-                              groups=64, 
-                              reduction=16,
-                              dropout_p=0.2, 
-                              last_stride=last_stride)
-        elif model_name == 'squeezenet':
-             self.in_planes = 512
-             self.base = SqueezeNet()
-        elif model_name == 'densenet':
-             self.in_planes = 1024
-             self.base = DenseNet()
-        elif model_name == 'mobilenet':
-             self.in_planes = 1280
-             self.base = MobileNetV2()
-        elif model_name == 'inception':
-             self.in_planes = 2048
-             self.base = Inception3()
-        if pretrain_choice == 'imagenet':
-            self.base.load_param(model_path)
-            print('Loading pretrained ImageNet model......')
-            
-        self.conv1 = nn.Conv2d(self.in_planes, num_classes, kernel_size=1, bias=False) 
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choicei, modality, num_attns=3):
+        super(BaselineV4, self).__init__()
+
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
+
+        self.num_attns = num_attns
+        self.attns = nn.ModuleList()
+        for i in range(self.num_attns):
+            self.attns.append(GatherExcite(1024))
+        
         self.gap = nn.AdaptiveAvgPool2d(1)
         # self.gap = nn.AdaptiveMaxPool2d(1)
         self.num_classes = num_classes
         self.neck = neck
         self.neck_feat = neck_feat
+        self.modality = modality
 
         if self.neck == 'no':
-            self.classifier = nn.Linear(self.in_planes, self.num_classes)
+            self.classifier = nn.Linear(self.in_planes*2, self.num_classes)
             # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
             # self.classifier.apply(weights_init_classifier)  # new add by luo
         elif self.neck == 'bnneck':
-            self.bottleneck = nn.BatchNorm1d(self.in_planes)
+            self.bottleneck = nn.BatchNorm1d(self.in_planes*2)
             self.bottleneck.bias.requires_grad_(False)  # no shift
-            self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)
+            self.classifier = nn.Linear(self.in_planes*2, self.num_classes)#, bias=False)
 
             self.bottleneck.apply(weights_init_kaiming)
             self.classifier.apply(weights_init_classifier)
 
     def forward(self, x):
-        
-        #y1 = x[:,0:1,:,:]*0.299+x[:,1:2,:,:]*0.587+x[:,2:3,:,:]*0.114
-        #y = x
-        #y[:,0:1,:,:] = y1
-        #y[:,1:2,:,:] = y1
-        #y[:,2:3,:,:] = y1
-        f = self.conv1(self.base(x))
-        global_feat1 = self.gap(self.base(x))  # (b, 2048, 1, 1)
-        global_feat1 = global_feat1.view(global_feat1.shape[0], -1)  # flatten to (bs, 2048)
-        
-        #global_feat2 = self.gap(self.base(y))  # (b, 2048, 1, 1)
-        #global_feat2 = global_feat2.view(global_feat2.shape[0], -1)  # flatten to (bs, 2048)  
-        
-
-
-        #global_feat =  torch.cat((global_feat1,global_feat2),1)    
+       
+        x = self.base(x)
+        x = torch.permute(x, (0,3,1,2))
         #pdb.set_trace()
-        #global_feat = global_feat1 * global_feat2
-        global_feat = global_feat1
-        #global_feat = self.gap(self.base(y))  # (b, 2048, 1, 1)
-        #global_feat = global_feat.view(global_feat.shape[0], -1)  # flatten to (bs, 2048)
+
+        x_ = x
+        #pdb.set_trace()
+        for att in self.attns:
+            x_ = x_ + att(x_)
+        feat = torch.cat( ( self.gap(x).view(x.shape[0], x.shape[1]), self.gap(x_).view(x.shape[0], x.shape[1]) ), dim=1 )
+
+        #if self.neck == 'no':
+        #    feat = torch.cat( (global_feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+        #el
+        #if self.neck == 'bnneck':
+        #feat = self.bottleneck(feat)  # normalize for angular softmax
+        #    #feat = torch.cat( (feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+            
+        if self.training:
+            cls_score = self.classifier(feat)
+            return cls_score, feat  # global feature for triplet loss
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return feat
+
+    def load_param(self, trained_path):
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
+        for i in param_dict:
+            #print(i)
+            if 'classifier' in i:
+                continue
+            self.state_dict()[i].copy_(param_dict[i])
+        ###
+
+
+
+
+
+from timm.layers.attention_pool2d import AttentionPool2d
+
+class BaselineV5(nn.Module):
+    in_planes = 2048
+
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choicei, modality, num_attns=3):
+        super(BaselineV5, self).__init__()
+
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
+
+        self.attn = AttentionPool2d(1024)
+        
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        # self.gap = nn.AdaptiveMaxPool2d(1)
+        self.num_classes = num_classes
+        self.neck = neck
+        self.neck_feat = neck_feat
+        self.modality = modality
+
         if self.neck == 'no':
-            feat = global_feat
+            self.classifier = nn.Linear(self.in_planes*2, self.num_classes)
+            # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
+            # self.classifier.apply(weights_init_classifier)  # new add by luo
         elif self.neck == 'bnneck':
-            feat = self.bottleneck(global_feat)  # normalize for angular softmax
-            #feat = global_feat
-        return feat,f
+            self.bottleneck = nn.BatchNorm1d(self.in_planes*2)
+            self.bottleneck.bias.requires_grad_(False)  # no shift
+            self.classifier = nn.Linear(self.in_planes*2, self.num_classes)#, bias=False)
 
-    def load_param(self, trained_path):
-        param_dict = torch.load(trained_path)
-        for i in param_dict:
-            if 'classifier' in i:
-                continue
-            self.state_dict()[i].copy_(param_dict[i])
+            self.bottleneck.apply(weights_init_kaiming)
+            self.classifier.apply(weights_init_classifier)
 
-class GraphConvolution(Module):
-    """
-    Simple GCN layer, similar to https://arxiv.org/abs/1609.02907
-    """
-
-    def __init__(self, in_features, out_features, bias=True):
-        super(GraphConvolution, self).__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.weight = Parameter(torch.FloatTensor(in_features, out_features))
-        if bias:
-            self.bias = Parameter(torch.FloatTensor(out_features))
-        else:
-            self.register_parameter('bias', None)
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        stdv = 1. / math.sqrt(self.weight.size(1))
-        self.weight.data.uniform_(-stdv, stdv)
-        if self.bias is not None:
-            self.bias.data.uniform_(-stdv, stdv)
-
-    def forward(self, input, adj):
-        support = torch.mm(input, self.weight)
-        output = torch.spmm(adj, support)
-        if self.bias is not None:
-            return output + self.bias
-        else:
-            return output
-
-    def __repr__(self):
-        return self.__class__.__name__ + ' (' \
-               + str(self.in_features) + ' -> ' \
-               + str(self.out_features) + ')'
-
-class GCN(nn.Module):
-    def __init__(self, nfeat, nhid, nclass, dropout):
-        super(GCN, self).__init__()
-
-        self.gc1 = GraphConvolution(nfeat, nhid)
-        self.gc2 = GraphConvolution(nhid, nclass)
-        self.dropout = dropout
-
-    def forward(self, x, adj):
-        x = F.relu(self.gc1(x, adj))
+    def forward(self, x):
+       
+        x = self.base(x)
+        x = torch.permute(x, (0,3,1,2))
         #pdb.set_trace()
-        x = F.dropout(x, self.dropout, training=self.training)
-        x = self.gc2(x, adj)
-        return F.log_softmax(x, dim=1)
+
+        x_ = x
+        #pdb.set_trace()
+        feat = torch.cat( (self.attn(x_), self.gap(x).view(x.shape[0], x.shape[1])), dim=1 )
+
+        #if self.neck == 'no':
+        #    feat = torch.cat( (global_feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+        #el
+        #if self.neck == 'bnneck':
+        #feat = self.bottleneck(feat)  # normalize for angular softmax
+        #    #feat = torch.cat( (feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
             
-class Baseline4(nn.Module):
-    in_planes = 2048
-
-    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice):
-        super(Baseline4, self).__init__()
-        if model_name == 'resnet18':
-            self.in_planes = 512
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'resnet34':
-            self.in_planes = 512
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'resnet50':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'resnet101':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'resnet152':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            
-        elif model_name == 'se_resnet50':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'se_resnet101':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'se_resnet152':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'se_resnext50':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'se_resnext101':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'senet154':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'squeezenet':
-            self.in_planes = 512
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'densenet':
-            self.in_planes = 1024
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'mobilenet':
-            self.in_planes = 1280
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'inception':
-            self.in_planes = 2048
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)         
-        self.gap = nn.AdaptiveAvgPool2d(1)
-        # self.gap = nn.AdaptiveMaxPool2d(1)
-        self.num_classes = num_classes
-        self.neck = neck
-        self.neck_feat = neck_feat
-
-        self.classifier = nn.Linear(self.in_planes, self.num_classes)
-        #self.classifier = nn.BatchNorm1d(self.classifier)
-        # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
-        # self.classifier.apply(weights_init_classifier)  # new add by luo
- 
-
-
-    def forward(self, x1, x2, x3):
-    
-
-        vs,f1 = self.visible_net(x1)
-        nr,f2 = self.nir_net(x2)
-        tr,f3 = self.thermal_net(x3)
-        f1 = torch.sigmoid(f1)
-        f2 = torch.sigmoid(f2)
-        f3 = torch.sigmoid(f3)
-        #pdb.set_trace()
-        
-        ff =((f2>f3).float()*f2 + (f3>f2).float()*f3)
-        ff =((ff>f1).float()*ff + (f1>ff).float()*f1)
-        fs1 = f1.sum(dim=[2,3])
-        fs11 = fs1.sum(dim=1)
-        fs11= torch.unsqueeze(fs11,1)
-        
-        fs2 = f2.sum(dim=[2,3])
-        fs22 = fs2.sum(dim=1)
-        fs22= torch.unsqueeze(fs22,1)
-        
-        fs3 = f3.sum(dim=[2,3])
-        fs33 = fs3.sum(dim=1)
-        fs33= torch.unsqueeze(fs33,1)
-        
-        ffs = ff.sum(dim=[2,3])
-        ffss = ffs.sum(dim=1)
-        ffss= torch.unsqueeze(ffss,1)
-        
-        fs111 = (fs1 / ffs) / ((fs2 / ffs) + (fs3 / ffs) + (fs1 / ffs))
-        fs222 = (fs2 / ffs) / ((fs2 / ffs) + (fs3 / ffs) + (fs1 / ffs))
-        fs333 = (fs3 / ffs) / ((fs2 / ffs) + (fs3 / ffs) + (fs1 / ffs))
-        fs = (ffs/ffss) * fs222 * fs2 + (ffs/ffss) * fs333 * fs3 +  (ffs/ffss) * fs111 * fs1
-
-        
-        
-
-        #pdb.set_trace()
-        x =  torch.unsqueeze(((ffs/ffss) * fs222).sum(1),1)*nr + torch.unsqueeze(((ffs/ffss) * fs333).sum(1),1)*tr + torch.unsqueeze(((ffs/ffss) * fs111).sum(1),1)*vs
-      #  x= vs + nr + tr
-       # x =  torch.unsqueeze(((ffs/ffss) * fs222).sum(1),1)*nr + torch.unsqueeze(((ffs/ffss) * fs333).sum(1),1)*tr
-        #x = torch.cat((vs, nr, tr), 0)
-        
-
         if self.training:
-            cls_score1 = self.classifier(vs)
-            cls_score2 = self.classifier(nr)
-            cls_score3 = self.classifier(tr)  
-            cls_score4 = self.classifier(x)     
-            return  cls_score1, vs, cls_score2, nr, cls_score3, tr, cls_score4, x  # global feature for triplet loss
+            cls_score = self.classifier(feat)
+            return cls_score, feat  # global feature for triplet loss
         else:
-            return x
-            
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return feat
+
     def load_param(self, trained_path):
-        param_dict = torch.load(trained_path)
-        for i in param_dict:
-            if 'classifier' in i:
-                continue
-            self.state_dict()[i].copy_(param_dict[i])
-
-class Baseline5(nn.Module):
-    in_planes = 2048
-
-    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice):
-        super(Baseline5, self).__init__()
-        if model_name == 'resnet18':
-            self.in_planes = 512
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'resnet34':
-            self.in_planes = 512
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'resnet50':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'resnet101':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'resnet152':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            
-        elif model_name == 'se_resnet50':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'se_resnet101':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'se_resnet152':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'se_resnext50':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'se_resnext101':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'senet154':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            
-        self.gap = nn.AdaptiveAvgPool2d(1)
-        # self.gap = nn.AdaptiveMaxPool2d(1)
-        self.num_classes = num_classes
-        self.neck = neck
-        self.neck_feat = neck_feat
-
-        self.classifier = nn.Linear(self.in_planes, self.num_classes)
-        #self.classifier = nn.BatchNorm1d(self.classifier)
-        # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
-        # self.classifier.apply(weights_init_classifier)  # new add by luo
- 
-
-
-    def forward(self, x1, x2, x3):
-    
-
-        vs,f1 = self.visible_net(x1)
-        nr,f2 = self.nir_net(x2)
-        tr,f3 = self.thermal_net(x3)
-        #x= vs + nr +tr 
-        x= vs + nr
-        #x = torch.cat((vs, nr, tr), 0)
-        
-
-        if self.training:
-            cls_score1 = self.classifier(vs)
-            cls_score2 = self.classifier(nr)
-            cls_score3 = self.classifier(tr)       
-            return cls_score1, vs, cls_score2, nr, cls_score3, tr  # global feature for triplet loss
-        else:
-            return x
-            
-    def load_param(self, trained_path):
-        param_dict = torch.load(trained_path)
-        for i in param_dict:
-            if 'classifier' in i:
-                continue
-            self.state_dict()[i].copy_(param_dict[i])
-
-class Baseline6(nn.Module):
-    in_planes = 2048
-
-    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice):
-        super(Baseline6, self).__init__()
-        if model_name == 'resnet18':
-            self.in_planes = 512
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'resnet34':
-            self.in_planes = 512
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'resnet50':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-           # self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'resnet101':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'resnet152':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            
-        elif model_name == 'se_resnet50':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'se_resnet101':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'se_resnet152':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'se_resnext50':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'se_resnext101':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'senet154':
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'squeezenet':
-            self.in_planes = 512
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-           # self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'densenet':
-            self.in_planes = 1024
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-           # self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'mobilenet':
-            self.in_planes = 1280
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            #self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-        elif model_name == 'inception':
-            self.in_planes = 2048
-            self.visible_net = Baseline1(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            self.nir_net = Baseline2(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)
-            #self.thermal_net = Baseline3(num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice)         
-        self.gap = nn.AdaptiveAvgPool2d(1)
-        # self.gap = nn.AdaptiveMaxPool2d(1)
-        self.num_classes = num_classes
-        self.neck = neck
-        self.neck_feat = neck_feat
-
-        self.classifier = nn.Linear(self.in_planes, self.num_classes)
-        #self.classifier = nn.BatchNorm1d(self.classifier)
-        # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
-        # self.classifier.apply(weights_init_classifier)  # new add by luo
- 
-
-
-    def forward(self, x1, x2, x3):
-    
-
-        vs,f1 = self.visible_net(x1)
-        nr,f2 = self.nir_net(x2)
-        #tr,f3 = self.thermal_net(x3)
-        f1 = torch.sigmoid(f1)
-        f2 = torch.sigmoid(f2)
-       # f3 = torch.sigmoid(f3)
+        param_dict = torch.load(trained_path)['model']
         #pdb.set_trace()
-        
-        ff =((f2>f1).float()*f2 + (f1>f2).float()*f1)
-        fs1 = f1.sum(dim=[2,3])
-        fs11 = fs1.sum(dim=1)
-        fs11= torch.unsqueeze(fs11,1)
-        
-        fs2 = f2.sum(dim=[2,3])
-        fs22 = fs2.sum(dim=1)
-        fs22= torch.unsqueeze(fs22,1)
-        
-        
-        ffs = ff.sum(dim=[2,3])
-        ffss = ffs.sum(dim=1)
-        ffss= torch.unsqueeze(ffss,1)
-        
-        fs111 = (fs1 / ffs) / ((fs2 / ffs)  + (fs1 / ffs))
-        fs222 = (fs2 / ffs) / ((fs2 / ffs)  + (fs1 / ffs))
-        fs = (ffs/ffss) * fs222 * fs2  +  (ffs/ffss) * fs111 * fs1
-
-        
-        
-
-        #pdb.set_trace()
-        x =  torch.unsqueeze(((ffs/ffss) * fs222).sum(1),1)*nr  + torch.unsqueeze(((ffs/ffss) * fs111).sum(1),1)*vs
-      #  x= vs + nr + tr
-       # x =  torch.unsqueeze(((ffs/ffss) * fs222).sum(1),1)*nr + torch.unsqueeze(((ffs/ffss) * fs333).sum(1),1)*tr
-        #x = torch.cat((vs, nr, tr), 0)
-        
-
-        if self.training:
-            cls_score1 = self.classifier(vs)
-            cls_score2 = self.classifier(nr)  
-            cls_score4 = fs  
-            return  cls_score1, vs, cls_score2, nr, cls_score4, fs  # global feature for triplet loss
-        else:
-            return x
-            
-    def load_param(self, trained_path):
-        param_dict = torch.load(trained_path)
         for i in param_dict:
+            #print(i)
             if 'classifier' in i:
                 continue
             self.state_dict()[i].copy_(param_dict[i])
+        ###
+
+
+
+

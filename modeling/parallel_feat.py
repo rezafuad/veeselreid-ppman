@@ -1,0 +1,1536 @@
+# encoding: utf-8
+"""
+@author:  liaoxingyu
+@contact: sherlockliao01@gmail.com
+"""
+import pdb
+import torch
+from torch import nn
+
+from .backbones.resnet import ResNet, BasicBlock, Bottleneck 
+from .backbones.senet import SENet, SEResNetBottleneck, SEBottleneck, SEResNeXtBottleneck 
+from .backbones.squeezenet import SqueezeNet,Fire
+from .backbones.densenet import _DenseLayer, _DenseBlock, _Transition, DenseNet
+from .backbones.mobilenet import ConvBNReLU, InvertedResidual, MobileNetV2
+from .backbones.inception import Inception3, BasicConv2d
+
+from .Mobile_Attention import Mobile_Attention
+
+import timm
+
+import math
+from torch.nn.parameter import Parameter
+from torch.nn.modules.module import Module
+
+import torch.nn.functional as F
+
+def weights_init_kaiming(m):
+    classname = m.__class__.__name__
+    if classname.find('Linear') != -1:
+        nn.init.kaiming_normal_(m.weight, a=0, mode='fan_out')
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0.0)
+    elif classname.find('Conv') != -1:
+        nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in')
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0.0)
+    elif classname.find('BatchNorm') != -1:
+        if m.affine:
+            nn.init.constant_(m.weight, 1.0)
+            nn.init.constant_(m.bias, 0.0)
+
+
+def weights_init_classifier(m):
+    classname = m.__class__.__name__
+    if classname.find('Linear') != -1:
+        nn.init.normal_(m.weight, std=0.001)
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0.0)
+
+
+def get_base_model(model_name):
+    base = None 
+    in_planes = 288
+
+    # MambaOut Classifier
+    if model_name == 'mambaout_base':
+        base = timm.create_model('mambaout_base.in1k', pretrained=True) 
+        base.head = nn.Identity()
+        in_planes = 768
+    elif model_name == 'mambaout_small':
+        base = timm.create_model('mambaout_small.in1k', pretrained=True) 
+        base.head = nn.Identity()
+        in_planes = 576
+    elif model_name == 'mambaout_tiny':
+        base = timm.create_model('mambaout_tiny.in1k', pretrained=True) 
+        base.head = nn.Identity()
+        in_planes = 576
+    elif model_name == 'mambaout_kobe':
+        base = timm.create_model('mambaout_kobe.in1k', pretrained=True) 
+        base.head = nn.Identity()
+        in_planes = 288
+    elif model_name == 'mambaout_femto':
+        base = timm.create_model('mambaout_femto.in1k', pretrained=True) 
+        base.head = nn.Identity()
+        in_planes = 288
+    elif model_name == 'mambaout_base_plus':
+        base = timm.create_model('mambaout_base_plus_rw.sw_e150_r384_in12k_ft_in1k', pretrained=True)
+        base.head = nn.Identity()
+        in_planes = 768
+
+    # SwinTransformer
+    if model_name == "swinv2_transformer":
+        base = timm.create_model("swinv2_base_window12to16_192to256.ms_in22k_ft_in1k", pretrained=True)
+        base.head = nn.Identity()
+        in_planes = 1024
+    elif model_name == "swinv2large_transformer":
+        base = timm.create_model("swinv2_large_window12to16_192to256.ms_in22k_ft_in1k", pretrained=True)
+        base.head = nn.Identity()
+        in_planes = 1536
+
+    # ViTamin
+    if model_name == "vitamin_base":
+        base = timm.create_model("vitamin_base_224", pretrained=True)
+        base.head = nn.Identity()
+        in_planes = 768
+
+    # NaFlex
+    if model_name == "naflex_base":
+        base = timm.create_model("naflexvit_base_patch16_gap.e300_s576_in1k", pretrained=True)
+        base.head = nn.Identity()
+        in_planes = 768
+
+    if model_name == "vit_so150m2":
+        base = timm.create_model("vit_so150m2_patch16_reg1_gap_384.sbb_e200_in12k_ft_in1k", pretrained=True)
+        base.head = nn.Identity()
+        in_planes = 832
+
+    return base, in_planes
+
+
+
+
+
+
+class StatPool(nn.Module):
+    in_planes = 2048
+
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choicei, modality):
+        super(StatPool, self).__init__()
+
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
+
+        self.conv1 = nn.Conv2d(self.in_planes, num_classes, kernel_size=1, bias=False)
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        # self.gap = nn.AdaptiveMaxPool2d(1)
+        self.num_classes = num_classes
+        self.neck = neck
+        self.neck_feat = neck_feat
+        self.modality = modality
+
+        if self.neck == 'no':
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)
+            # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
+            # self.classifier.apply(weights_init_classifier)  # new add by luo
+        elif self.neck == 'bnneck':
+            self.bottleneck = nn.BatchNorm1d(self.in_planes*2)
+            self.bottleneck.bias.requires_grad_(False)  # no shift
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes, bias=False)
+
+            self.bottleneck.apply(weights_init_kaiming)
+            self.classifier.apply(weights_init_classifier)
+        print(self)
+
+    def forward(self, x):
+       
+        x = self.base.forward_features(x)
+        #pdb.set_trace()
+
+        # simple statistic pooling
+        if len(x.shape) > 3:
+            x = torch.permute( x, (0, 3, 1, 2) )
+            mean = torch.mean( x, [2,3] )
+            #pdb.set_trace()
+            std = torch.std( x, [2,3] )
+            global_feat1 = self.gap( x )
+            global_feat1 = global_feat1.view(global_feat1.shape[0], -1)
+        elif len(x.shape) == 3:
+            x = x[:, self.base.num_prefix_tokens:]
+            x = torch.permute( x, (0, 2, 1) )
+            mean = torch.mean( x, 2 )
+            std = torch.std( x, 2 )
+            global_feat1 = self.gap( x.view(x.shape[0], x.shape[1], x.shape[2], 1 ) )
+            global_feat1 = global_feat1.view(global_feat1.shape[0], -1)
+        global_feat = torch.cat( (global_feat1, mean, std), 1 )
+
+        if self.neck == 'no':
+            feat = global_feat
+        elif self.neck == 'bnneck':
+            #feat = self.bottleneck(global_feat)  # normalize for angular softmax
+             feat = global_feat
+        #pdb.set_trace()
+
+        if self.training:
+            cls_score = self.classifier(feat)
+            return cls_score, global_feat  # global feature for triplet loss
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return global_feat
+
+    def load_param(self, trained_path):
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
+        for i in param_dict:
+            #print(i)
+            if 'classifier' in i:
+                continue
+            self.state_dict()[i].copy_(param_dict[i])
+        ###
+
+
+"""
+Attention Code taken from https://github.com/KrishnaDN/Attentive-Statistics-Pooling-for-Deep-Speaker-Embedding/blob/master/modules/Attention_Pooling.py
+"""
+class Classic_Attention(nn.Module):
+    def __init__(self,input_dim, embed_dim, attn_dropout=0.0):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.attn_dropout = attn_dropout
+        self.lin_proj = nn.Linear(input_dim,embed_dim)
+        self.v = torch.nn.Parameter(torch.randn(embed_dim))
+                                                        
+    def forward(self,inputs):
+        pdb.set_trace()
+        lin_out = self.lin_proj(inputs)
+        v_view = self.v.unsqueeze(0).expand(lin_out.size(0), len(self.v)).unsqueeze(2)
+        attention_weights = F.tanh(lin_out.bmm(v_view).squeeze())
+        attention_weights_normalized = F.softmax(attention_weights,1)
+        return attention_weights_normalized
+
+# Defines the new fc layer and classification layer
+# |--Linear--|--bn--|--relu--|--Linear--|
+class ClassBlock(nn.Module):
+    def __init__(self, input_dim, class_num, droprate, relu=False, bnorm=True, linear=512, return_f = False):
+        super(ClassBlock, self).__init__()
+        self.return_f = return_f
+        add_block = []
+        if linear>0:
+            add_block += [nn.Linear(input_dim, linear)]
+        else:
+            linear = input_dim
+        if bnorm:
+            add_block += [nn.BatchNorm1d(linear)]
+        if relu:
+            add_block += [nn.LeakyReLU(0.1)]
+        if droprate>0:
+            add_block += [nn.Dropout(p=droprate)]
+        add_block = nn.Sequential(*add_block)
+        add_block.apply(weights_init_kaiming)
+
+        classifier = []
+        classifier += [nn.Linear(linear, class_num)]
+        classifier = nn.Sequential(*classifier)
+        classifier.apply(weights_init_classifier)
+
+        self.add_block = add_block
+        self.classifier = classifier
+    def forward(self, x):
+        x = self.add_block(x)
+        if self.return_f:
+            f = x
+            x = self.classifier(x)
+            return [x,f]
+        else:
+            x = self.classifier(x)
+            return x
+##################################
+
+
+
+
+#################################################################################################################################
+
+from timm.models._efficientnet_blocks import SqueezeExcite, ConvBnAct, DepthwiseSeparableConv
+from timm.models._efficientnet_blocks import MobileAttention
+from timm.layers.global_context import GlobalContext
+from timm.layers.gather_excite import GatherExcite 
+
+"""
+Att net design
+
+"""
+class ParallelFeatV1(nn.Module):
+    in_planes = 2048
+
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choicei, modality, num_attns=3):
+        super(ParallelFeatV1, self).__init__()
+
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
+
+        self.num_attns = num_attns
+        self.attns = nn.ModuleList()
+        for i in range(self.num_attns):
+            #self.attns1.append(GatherExcite(1024))
+            #self.attns2.append(GlobalContext(1024))
+            self.attns.append(MobileAttention(1024,1024))       
+
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        # self.gap = nn.AdaptiveMaxPool2d(1)
+        self.num_classes = num_classes
+        self.neck = neck
+        self.neck_feat = neck_feat
+        self.modality = modality
+
+        if self.neck == 'no':
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)
+            # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
+            # self.classifier.apply(weights_init_classifier)  # new add by luo
+        elif self.neck == 'bnneck':
+            self.bottleneck = nn.BatchNorm1d(self.in_planes*3)
+            self.bottleneck.bias.requires_grad_(False)  # no shift
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)#, bias=False)
+
+            self.bottleneck.apply(weights_init_kaiming)
+            self.classifier.apply(weights_init_classifier)
+
+    
+    def forward(self, x):
+       
+        x = self.base(x)
+        x = torch.permute(x, (0,3,1,2))
+        #pdb.set_trace()
+
+        x_global = x
+        xy1 = x[:, :, 0:4, :]
+        xy2 = x[:, :, 2:6, :]
+        xy3 = x[:, :, 4:8, :]
+        #pdb.set_trace()
+        for att in self.attns:
+            xy1 = xy1 + att(xy1)
+            xy2 = xy2 + att(xy2)
+            xy3 = xy3 + att(xy3)
+        xy = torch.cat( (xy1, xy2, xy3), dim=2)
+
+        xx1 = x[:, :, :, 0:4]
+        xx2 = x[:, :, :, 2:6]
+        xx3 = x[:, :, :, 4:8]
+        for att in self.attns:
+            xx1 = xx1 + att(xx1)
+            xx2 = xx2 + att(xx2)
+            xx3 = xx3 + att(xx3)
+        xx = torch.cat( (xx1, xx2, xx3), dim=3)
+
+        feat = torch.cat( ( self.gap(x).view(x.shape[0], x.shape[1]), 
+                            self.gap(xy).view(x.shape[0], x.shape[1]),
+                            self.gap(xx).view(x.shape[0], x.shape[1]),
+                           ), dim=1 )
+
+        #if self.neck == 'no':
+        #    feat = torch.cat( (global_feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+        #el
+        #if self.neck == 'bnneck':
+        #feat = self.bottleneck(feat)  # normalize for angular softmax
+        #    #feat = torch.cat( (feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+            
+        if self.training:
+            cls_score = self.classifier(feat)
+            return cls_score, feat  # global feature for triplet loss
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return feat
+
+    def load_param(self, trained_path):
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
+        for i in param_dict:
+            #print(i)
+            if 'classifier' in i:
+                continue
+            self.state_dict()[i].copy_(param_dict[i])
+        ###
+
+
+class ParallelFeatV2(nn.Module):
+    in_planes = 2048
+
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choicei, modality, num_attns=3):
+        super(ParallelFeatV2, self).__init__()
+
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
+
+        self.num_attns = num_attns
+        self.attns = nn.ModuleList()
+        for i in range(self.num_attns):
+            #self.attns1.append(GatherExcite(1024))
+            self.attns.append(GlobalContext(1024))
+            #self.attns.append(MobileAttention(1024,1024))       
+
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        # self.gap = nn.AdaptiveMaxPool2d(1)
+        self.num_classes = num_classes
+        self.neck = neck
+        self.neck_feat = neck_feat
+        self.modality = modality
+
+        if self.neck == 'no':
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)
+            # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
+            # self.classifier.apply(weights_init_classifier)  # new add by luo
+        elif self.neck == 'bnneck':
+            self.bottleneck = nn.BatchNorm1d(self.in_planes*3)
+            self.bottleneck.bias.requires_grad_(False)  # no shift
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)#, bias=False)
+
+            self.bottleneck.apply(weights_init_kaiming)
+            self.classifier.apply(weights_init_classifier)
+
+    
+    def forward(self, x):
+       
+        x = self.base(x)
+        x = torch.permute(x, (0,3,1,2))
+        #pdb.set_trace()
+
+        x_global = x
+        xy1 = x[:, :, 0:4, :]
+        xy2 = x[:, :, 2:6, :]
+        xy3 = x[:, :, 4:8, :]
+        #pdb.set_trace()
+        for att in self.attns:
+            xy1 = xy1 + att(xy1)
+            xy2 = xy2 + att(xy2)
+            xy3 = xy3 + att(xy3)
+        xy = torch.cat( (xy1, xy2, xy3), dim=2)
+
+        xx1 = x[:, :, :, 0:4]
+        xx2 = x[:, :, :, 2:6]
+        xx3 = x[:, :, :, 4:8]
+        for att in self.attns:
+            xx1 = xx1 + att(xx1)
+            xx2 = xx2 + att(xx2)
+            xx3 = xx3 + att(xx3)
+        xx = torch.cat( (xx1, xx2, xx3), dim=3)
+
+        feat = torch.cat( ( self.gap(x).view(x.shape[0], x.shape[1]), 
+                            self.gap(xy).view(x.shape[0], x.shape[1]),
+                            self.gap(xx).view(x.shape[0], x.shape[1]),
+                           ), dim=1 )
+
+        #if self.neck == 'no':
+        #    feat = torch.cat( (global_feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+        #el
+        #if self.neck == 'bnneck':
+        #feat = self.bottleneck(feat)  # normalize for angular softmax
+        #    #feat = torch.cat( (feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+            
+        if self.training:
+            cls_score = self.classifier(feat)
+            return cls_score, feat  # global feature for triplet loss
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return feat
+
+    def load_param(self, trained_path):
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
+        for i in param_dict:
+            #print(i)
+            if 'classifier' in i:
+                continue
+            self.state_dict()[i].copy_(param_dict[i])
+        ###
+
+
+
+
+class ParallelFeatV3(nn.Module):
+    in_planes = 2048
+
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choicei, modality, num_attns=3):
+        super(ParallelFeatV3, self).__init__()
+
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
+
+        self.num_attns = num_attns
+        self.attns = nn.ModuleList()
+        for i in range(self.num_attns):
+            self.attns.append(GatherExcite(1024))
+            #self.attns.append(GlobalContext(1024))
+            #self.attns.append(MobileAttention(1024,1024))       
+
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        # self.gap = nn.AdaptiveMaxPool2d(1)
+        self.num_classes = num_classes
+        self.neck = neck
+        self.neck_feat = neck_feat
+        self.modality = modality
+
+        if self.neck == 'no':
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)
+            # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
+            # self.classifier.apply(weights_init_classifier)  # new add by luo
+        elif self.neck == 'bnneck':
+            self.bottleneck = nn.BatchNorm1d(self.in_planes*3)
+            self.bottleneck.bias.requires_grad_(False)  # no shift
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)#, bias=False)
+
+            self.bottleneck.apply(weights_init_kaiming)
+            self.classifier.apply(weights_init_classifier)
+
+    
+    def forward(self, x):
+       
+        x = self.base(x)
+        x = torch.permute(x, (0,3,1,2))
+        #pdb.set_trace()
+
+        x_global = x
+        xy1 = x[:, :, 0:4, :]
+        xy2 = x[:, :, 2:6, :]
+        xy3 = x[:, :, 4:8, :]
+        #pdb.set_trace()
+        for att in self.attns:
+            xy1 = xy1 + att(xy1)
+            xy2 = xy2 + att(xy2)
+            xy3 = xy3 + att(xy3)
+        xy = torch.cat( (xy1, xy2, xy3), dim=2)
+
+        xx1 = x[:, :, :, 0:4]
+        xx2 = x[:, :, :, 2:6]
+        xx3 = x[:, :, :, 4:8]
+        for att in self.attns:
+            xx1 = xx1 + att(xx1)
+            xx2 = xx2 + att(xx2)
+            xx3 = xx3 + att(xx3)
+        xx = torch.cat( (xx1, xx2, xx3), dim=3)
+
+        feat = torch.cat( ( self.gap(x).view(x.shape[0], x.shape[1]), 
+                            self.gap(xy).view(x.shape[0], x.shape[1]),
+                            self.gap(xx).view(x.shape[0], x.shape[1]),
+                           ), dim=1 )
+
+        #if self.neck == 'no':
+        #    feat = torch.cat( (global_feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+        #el
+        #if self.neck == 'bnneck':
+        #feat = self.bottleneck(feat)  # normalize for angular softmax
+        #    #feat = torch.cat( (feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+            
+        if self.training:
+            cls_score = self.classifier(feat)
+            return cls_score, feat  # global feature for triplet loss
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return feat
+
+    def load_param(self, trained_path):
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
+        for i in param_dict:
+            #print(i)
+            if 'classifier' in i:
+                continue
+            self.state_dict()[i].copy_(param_dict[i])
+        ###
+
+
+
+
+class ParallelFeatV4(nn.Module):
+    in_planes = 2048
+
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choicei, modality, num_attns=3):
+        super(ParallelFeatV4, self).__init__()
+
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
+        
+        self.num_attns = num_attns
+        self.attns1 = nn.ModuleList()
+        self.attns2 = nn.ModuleList()
+        self.attns3 = nn.ModuleList()
+        for i in range(self.num_attns):
+            self.attns3.append(GatherExcite(1024))
+            self.attns2.append(GlobalContext(1024))
+            self.attns1.append(MobileAttention(1024,1024))       
+
+        self.dp2d1 = nn.Dropout2d(0.0625)
+        self.dp2d2 = nn.Dropout2d(0.0625)
+        self.dp2d3 = nn.Dropout2d(0.0625)
+
+
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        # self.gap = nn.AdaptiveMaxPool2d(1)
+        self.num_classes = num_classes
+        self.neck = neck
+        self.neck_feat = neck_feat
+        self.modality = modality
+
+        if self.neck == 'no':
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)
+            # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
+            # self.classifier.apply(weights_init_classifier)  # new add by luo
+        elif self.neck == 'bnneck':
+            self.bottleneck = nn.BatchNorm1d(self.in_planes*3)
+            self.bottleneck.bias.requires_grad_(False)  # no shift
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)#, bias=False)
+
+            self.bottleneck.apply(weights_init_kaiming)
+            self.classifier.apply(weights_init_classifier)
+
+    
+    def forward(self, x):
+       
+        x = self.base(x)
+        x = torch.permute(x, (0,3,1,2))
+        #pdb.set_trace()
+
+        x_global = x
+
+        ## a1
+        xy1_a1 = x[:, :, 0:4, :]
+        xy2_a1 = x[:, :, 2:6, :]
+        xy3_a1 = x[:, :, 4:8, :]
+        #pdb.set_trace()
+        for att in self.attns1:
+            xy1_a1 = xy1_a1 + att(xy1_a1)
+            xy2_a1 = xy2_a1 + att(xy2_a1)
+            xy3_a1 = xy3_a1 + att(xy3_a1)
+        xy1_a1 = self.dp2d1(xy1_a1)
+        xy2_a1 = self.dp2d2(xy2_a1)
+        xy3_a1 = self.dp2d3(xy3_a1)
+        xy_a1 = torch.cat( (xy1_a1, xy2_a1, xy3_a1), dim=2)
+
+        ## a2
+        xy1_a2 = x[:, :, 0:4, :]
+        xy2_a2 = x[:, :, 2:6, :]
+        xy3_a2 = x[:, :, 4:8, :]
+        #pdb.set_trace()
+        for att in self.attns2:
+            xy1_a2 = xy1_a2 + att(xy1_a2)
+            xy2_a2 = xy2_a2 + att(xy2_a2)
+            xy3_a2 = xy3_a2 + att(xy3_a2)
+        xy1_a2 = self.dp2d1(xy1_a2)
+        xy2_a2 = self.dp2d1(xy2_a2)
+        xy3_a2 = self.dp2d1(xy3_a2)
+        xy_a2 = torch.cat( (xy1_a2, xy2_a2, xy3_a2), dim=2)
+
+        ## a3
+        xy1_a3 = x[:, :, 0:4, :]
+        xy2_a3 = x[:, :, 2:6, :]
+        xy3_a3 = x[:, :, 4:8, :]
+        #pdb.set_trace()
+        for att in self.attns3:
+            xy1_a3 = xy1_a3 + att(xy1_a3)
+            xy2_a3 = xy2_a3 + att(xy2_a3)
+            xy3_a3 = xy3_a3 + att(xy3_a3)
+        xy1_a3 = self.dp2d1(xy1_a3)
+        xy2_a3 = self.dp2d1(xy2_a3)
+        xy3_a3 = self.dp2d1(xy3_a3)
+        xy_a3 = torch.cat( (xy1_a3, xy2_a3, xy3_a3), dim=2)
+
+
+        ## a1
+        xx1_a1 = x[:, :, :, 0:4]
+        xx2_a1 = x[:, :, :, 2:6]
+        xx3_a1 = x[:, :, :, 4:8]
+        for att in self.attns1:
+            xx1_a1 = xx1_a1 + att(xx1_a1)
+            xx2_a1 = xx2_a1 + att(xx2_a1)
+            xx3_a1 = xx3_a1 + att(xx3_a1)
+        xx1_a1 = self.dp2d1(xx1_a1)
+        xx2_a1 = self.dp2d1(xx2_a1)
+        xx3_a1 = self.dp2d1(xx3_a1)
+        xx_a1 = torch.cat( (xx1_a1, xx2_a1, xx3_a1), dim=3)
+
+        ## a2
+        xx1_a2 = x[:, :, :, 0:4]
+        xx2_a2 = x[:, :, :, 2:6]
+        xx3_a2 = x[:, :, :, 4:8]
+        for att in self.attns2:
+            xx1_a2 = xx1_a2 + att(xx1_a2)
+            xx2_a2 = xx2_a2 + att(xx2_a2)
+            xx3_a2 = xx3_a2 + att(xx3_a2)
+        xx1_a2 = self.dp2d1(xx1_a2)
+        xx2_a2 = self.dp2d1(xx2_a2)
+        xx3_a2 = self.dp2d1(xx3_a2) 
+        xx_a2 = torch.cat( (xx1_a2, xx2_a2, xx3_a2), dim=3)
+
+        ## a3
+        xx1_a3 = x[:, :, :, 0:4]
+        xx2_a3 = x[:, :, :, 2:6]
+        xx3_a3 = x[:, :, :, 4:8]
+        for att in self.attns3:
+            xx1_a3 = xx1_a3 + att(xx1_a3)
+            xx2_a3 = xx2_a3 + att(xx2_a3)
+            xx3_a3 = xx3_a3 + att(xx3_a3)
+        xx1_a3 = self.dp2d1(xx1_a3)
+        xx2_a3 = self.dp2d1(xx2_a3)
+        xx3_a3 = self.dp2d1(xx3_a3)
+        xx_a3 = torch.cat( (xx1_a3, xx2_a3, xx3_a3), dim=3)
+
+        xy = xy_a1 + xy_a2 + xy_a3
+        xx = xx_a1 + xx_a2 + xx_a3
+
+
+        feat = torch.cat( ( self.gap(x).view(x.shape[0], x.shape[1]), 
+                            self.gap(xy).view(x.shape[0], x.shape[1]),
+                            self.gap(xx).view(x.shape[0], x.shape[1]),
+                           ), dim=1 )
+
+        #if self.neck == 'no':
+        #    feat = torch.cat( (global_feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+        #el
+        #if self.neck == 'bnneck':
+        #feat = self.bottleneck(feat)  # normalize for angular softmax
+        #    #feat = torch.cat( (feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+            
+        if self.training:
+            cls_score = self.classifier(feat)
+            return cls_score, feat  # global feature for triplet loss
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return feat
+
+    def load_param(self, trained_path):
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
+        for i in param_dict:
+            #print(i)
+            if 'classifier' in i:
+                continue
+            self.state_dict()[i].copy_(param_dict[i])
+        ###
+
+
+
+### possible cascade self attention configuration
+###     GC-GE-MHA
+###     GC-MHA-GE
+###     GE-GC-MHA
+###     GE-MHA-GC
+###     MHA-GE-GC
+###     MHA-GC-GE
+
+### PP + GC-GE-MHA 
+class ParallelFeatV5(nn.Module):
+    in_planes = 2048
+
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice, modality, num_attns=3, attconf='gcgemha'):
+        super(ParallelFeatV5, self).__init__()
+
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
+
+        # freeze backbone
+        #for param in self.base.parameters():
+        #    param.requires_grad = False
+        #          gc ge mha
+        indatts = [0, 1, 2]
+        if attconf == 'gcmhage':
+            indatts = [0, 2, 1]
+        elif attconf == 'gegcmha':
+            indatts = [1, 0, 2]
+        elif attconf == 'gemhagc':
+            indatts = [2, 0, 1]
+        elif attconf == 'mhagcge':
+            indatts = [1, 2, 0]
+        elif attconf == 'mhagegc':
+            indatts = [2, 1, 0]
+
+
+        self.num_attns = num_attns
+        self.attns1 = nn.ModuleList()
+        for i in range(self.num_attns):
+            if i % 3 == indatts[2]: #2:
+                self.attns1.append(MobileAttention(1024,1024))       
+            elif i % 3 == indatts[1]: #1:
+                self.attns1.append(GatherExcite(1024))
+            else:
+                self.attns1.append(GlobalContext(1024))
+        self.attns2 = nn.ModuleList()
+        for i in range(self.num_attns):
+            if i % 3 == indatts[2]: #2:
+                self.attns2.append(MobileAttention(1024,1024))       
+            elif i % 3 == indatts[1]: #1:
+                self.attns2.append(GatherExcite(1024))
+            else:
+                self.attns2.append(GlobalContext(1024)) 
+        self.attns3 = nn.ModuleList()
+        for i in range(self.num_attns):
+            if i % 3 == indatts[2]: #2:
+                self.attns3.append(MobileAttention(1024,1024))       
+            elif i % 3 == indatts[1]: #1:
+                self.attns3.append(GatherExcite(1024))
+            else:
+                self.attns3.append(GlobalContext(1024))
+            ####
+        ####
+
+
+        self.dp2d1 = nn.Dropout2d(0.03125) # ori
+        #self.dp2d1 = nn.Dropout2d(0.0625)
+        #self.dp2d1 = nn.Dropout(0.5)
+        #self.dp2d1 = nn.Identity()
+        self.dp2d2 = nn.Dropout2d(0.03125)
+        #self.dp2d2 = nn.Dropout2d(0.0625)
+        #self.dp2d2 = nn.Dropout(0.5)
+        #self.dp2d2 = nn.Identity()
+        self.dp2d3 = nn.Dropout2d(0.03125)
+        #self.dp2d3 = nn.Dropout2d(0.0625)
+        #self.dp2d3 = nn.Dropout(0.5)
+        #self.dp2d3 = nn.Identity()
+
+
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        # self.gap = nn.AdaptiveMaxPool2d(1)
+        self.num_classes = num_classes
+        self.neck = neck
+        self.neck_feat = neck_feat
+        self.modality = modality
+
+        if self.neck == 'no':
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)
+            # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
+            # self.classifier.apply(weights_init_classifier)  # new add by luo
+        elif self.neck == 'bnneck':
+            self.bottleneck = nn.BatchNorm1d(self.in_planes*3)
+            self.bottleneck.bias.requires_grad_(False)  # no shift
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)#, bias=False)
+
+            #self.bottleneck.apply(weights_init_kaiming)
+            #self.classifier.apply(weights_init_classifier)
+
+        print(self)
+    
+    def forward(self, x):
+       
+        x = self.base(x)
+        x = torch.permute(x, (0,3,1,2))
+        #pdb.set_trace()
+
+        x_global = x
+
+        ## a1
+        xy1_a1 = x[:, :, 0:4, :]
+        xy2_a1 = x[:, :, 2:6, :]
+        xy3_a1 = x[:, :, 4:8, :]
+        #pdb.set_trace()
+        for att in self.attns1:
+            xy1_a1 = xy1_a1 + att(xy1_a1)
+            xy2_a1 = xy2_a1 + att(xy2_a1)
+            xy3_a1 = xy3_a1 + att(xy3_a1)
+            #
+            #xy1_a1 = self.dp2d1(xy1_a1)
+            #xy2_a1 = self.dp2d2(xy2_a1)
+            #xy3_a1 = self.dp2d3(xy3_a1)
+        xy1_a1 = self.dp2d1(xy1_a1)
+        xy2_a1 = self.dp2d2(xy2_a1)
+        xy3_a1 = self.dp2d3(xy3_a1)
+        xy_a1 = torch.cat( (xy1_a1, xy2_a1, xy3_a1), dim=2)
+
+        ## a2
+        xy1_a2 = x[:, :, 0:4, :]
+        xy2_a2 = x[:, :, 2:6, :]
+        xy3_a2 = x[:, :, 4:8, :]
+        #pdb.set_trace()
+        for att in self.attns2:
+            xy1_a2 = xy1_a2 + att(xy1_a2)
+            xy2_a2 = xy2_a2 + att(xy2_a2)
+            xy3_a2 = xy3_a2 + att(xy3_a2)
+            #
+            #xy1_a2 = self.dp2d1(xy1_a2)
+            #xy2_a2 = self.dp2d2(xy2_a2)
+            #xy3_a2 = self.dp2d3(xy3_a2)
+        xy1_a2 = self.dp2d1(xy1_a2)
+        xy2_a2 = self.dp2d2(xy2_a2)
+        xy3_a2 = self.dp2d3(xy3_a2)
+        xy_a2 = torch.cat( (xy1_a2, xy2_a2, xy3_a2), dim=2)
+
+        ## a3
+        xy1_a3 = x[:, :, 0:4, :]
+        xy2_a3 = x[:, :, 2:6, :]
+        xy3_a3 = x[:, :, 4:8, :]
+        #pdb.set_trace()
+        for att in self.attns3:
+            xy1_a3 = xy1_a3 + att(xy1_a3)
+            xy2_a3 = xy2_a3 + att(xy2_a3)
+            xy3_a3 = xy3_a3 + att(xy3_a3)
+            #
+            #xy1_a3 = self.dp2d1(xy1_a3)
+            #xy2_a3 = self.dp2d2(xy2_a3)
+            #xy3_a3 = self.dp2d3(xy3_a3)
+        xy1_a3 = self.dp2d1(xy1_a3)
+        xy2_a3 = self.dp2d2(xy2_a3)
+        xy3_a3 = self.dp2d3(xy3_a3)
+        xy_a3 = torch.cat( (xy1_a3, xy2_a3, xy3_a3), dim=2)
+
+
+        ## a1
+        xx1_a1 = x[:, :, :, 0:4]
+        xx2_a1 = x[:, :, :, 2:6]
+        xx3_a1 = x[:, :, :, 4:8]
+        for att in self.attns1:
+            xx1_a1 = xx1_a1 + att(xx1_a1)
+            xx2_a1 = xx2_a1 + att(xx2_a1)
+            xx3_a1 = xx3_a1 + att(xx3_a1)
+            #
+            #xx1_a1 = self.dp2d1(xx1_a1)
+            #xx2_a1 = self.dp2d2(xx2_a1)
+            #xx3_a1 = self.dp2d3(xx3_a1)
+        xx1_a1 = self.dp2d1(xx1_a1)
+        xx2_a1 = self.dp2d2(xx2_a1)
+        xx3_a1 = self.dp2d3(xx3_a1)
+        xx_a1 = torch.cat( (xx1_a1, xx2_a1, xx3_a1), dim=3)
+
+        ## a2
+        xx1_a2 = x[:, :, :, 0:4]
+        xx2_a2 = x[:, :, :, 2:6]
+        xx3_a2 = x[:, :, :, 4:8]
+        for att in self.attns2:
+            xx1_a2 = xx1_a2 + att(xx1_a2)
+            xx2_a2 = xx2_a2 + att(xx2_a2)
+            xx3_a2 = xx3_a2 + att(xx3_a2)
+            #
+            #xx1_a2 = self.dp2d1(xx1_a2)
+            #xx2_a2 = self.dp2d2(xx2_a2)
+            #xx3_a2 = self.dp2d3(xx3_a2) 
+        xx1_a2 = self.dp2d1(xx1_a2)
+        xx2_a2 = self.dp2d2(xx2_a2)
+        xx3_a2 = self.dp2d3(xx3_a2) 
+        xx_a2 = torch.cat( (xx1_a2, xx2_a2, xx3_a2), dim=3)
+
+        ## a3
+        xx1_a3 = x[:, :, :, 0:4]
+        xx2_a3 = x[:, :, :, 2:6]
+        xx3_a3 = x[:, :, :, 4:8]
+        for att in self.attns3:
+            xx1_a3 = xx1_a3 + att(xx1_a3)
+            xx2_a3 = xx2_a3 + att(xx2_a3)
+            xx3_a3 = xx3_a3 + att(xx3_a3)
+            #
+            #xx1_a3 = self.dp2d1(xx1_a3)
+            #xx2_a3 = self.dp2d2(xx2_a3)
+            #xx3_a3 = self.dp2d3(xx3_a3)
+        xx1_a3 = self.dp2d1(xx1_a3)
+        xx2_a3 = self.dp2d2(xx2_a3)
+        xx3_a3 = self.dp2d3(xx3_a3)
+        xx_a3 = torch.cat( (xx1_a3, xx2_a3, xx3_a3), dim=3)
+
+        xy = xy_a1 + xy_a2 + xy_a3
+        xx = xx_a1 + xx_a2 + xx_a3
+
+
+        feat = torch.cat( ( self.gap(x).view(x.shape[0], x.shape[1]), 
+                            self.gap(xy).view(x.shape[0], x.shape[1]),
+                            self.gap(xx).view(x.shape[0], x.shape[1]),
+                           ), dim=1 )
+
+        #if self.neck == 'no':
+        #    feat = torch.cat( (global_feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+        #el
+        #if self.neck == 'bnneck':
+        #    feat = self.bottleneck(feat)
+            
+        if self.training:
+            cls_score = self.classifier(feat)
+            return cls_score, feat  # global feature for triplet loss
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return feat
+
+    def load_param(self, trained_path):
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
+        for i in param_dict:
+            #print(i)
+            if 'classifier' in i:
+                continue
+            self.state_dict()[i].copy_(param_dict[i])
+        ###
+
+
+class ParallelFeatV5Att(nn.Module):
+    in_planes = 2048
+
+    def __init__(self, num_classes, att_num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice, modality, num_attns=3, attconf='gcgemha'):
+        super(ParallelFeatV5Att, self).__init__()
+
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
+
+        # freeze backbone
+        #for param in self.base.parameters():
+        #    param.requires_grad = False
+        #          gc ge mha
+        indatts = [0, 1, 2]
+        if attconf == 'gcmhage':
+            indatts = [0, 2, 1]
+        elif attconf == 'gegcmha':
+            indatts = [1, 0, 2]
+        elif attconf == 'gemhagc':
+            indatts = [2, 0, 1]
+        elif attconf == 'mhagcge':
+            indatts = [1, 2, 0]
+        elif attconf == 'mhagegc':
+            indatts = [2, 1, 0]
+
+
+        self.num_attns = num_attns
+        self.attns1 = nn.ModuleList()
+        for i in range(self.num_attns):
+            if i % 3 == indatts[2]: #2:
+                self.attns1.append(MobileAttention(1024,1024))       
+            elif i % 3 == indatts[1]: #1:
+                self.attns1.append(GatherExcite(1024))
+            else:
+                self.attns1.append(GlobalContext(1024))
+        self.attns2 = nn.ModuleList()
+        for i in range(self.num_attns):
+            if i % 3 == indatts[2]: #2:
+                self.attns2.append(MobileAttention(1024,1024))       
+            elif i % 3 == indatts[1]: #1:
+                self.attns2.append(GatherExcite(1024))
+            else:
+                self.attns2.append(GlobalContext(1024)) 
+        self.attns3 = nn.ModuleList()
+        for i in range(self.num_attns):
+            if i % 3 == indatts[2]: #2:
+                self.attns3.append(MobileAttention(1024,1024))       
+            elif i % 3 == indatts[1]: #1:
+                self.attns3.append(GatherExcite(1024))
+            else:
+                self.attns3.append(GlobalContext(1024))
+            ####
+        ####
+
+
+        #self.dp2d1 = nn.Dropout2d(0.03125) # ori
+        #self.dp2d1 = nn.Dropout2d(0.0625)
+        self.dp2d1 = nn.Dropout(0.125)
+        #self.dp2d1 = nn.Dropout(0.5)
+        #self.dp2d1 = nn.Identity()
+        #self.dp2d2 = nn.Dropout2d(0.03125)
+        #self.dp2d2 = nn.Dropout2d(0.0625)
+        self.dp2d1 = nn.Dropout(0.125)
+        #self.dp2d2 = nn.Dropout(0.5)
+        #self.dp2d2 = nn.Identity()
+        #self.dp2d3 = nn.Dropout2d(0.03125)
+        #self.dp2d3 = nn.Dropout2d(0.0625)
+        self.dp2d1 = nn.Dropout(0.125)
+        #self.dp2d3 = nn.Dropout(0.5)
+        #self.dp2d3 = nn.Identity()
+
+
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        # self.gap = nn.AdaptiveMaxPool2d(1)
+        self.num_classes = num_classes
+        self.neck = neck
+        self.neck_feat = neck_feat
+        self.modality = modality
+
+        self.att_num_classes = att_num_classes
+        self.attClassifier = nn.ModuleList()
+        for c in att_num_classes:
+            self.attClassifier.append(nn.Linear(self.in_planes*3, c))
+        ####
+
+        if self.neck == 'no':
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)
+            # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
+            # self.classifier.apply(weights_init_classifier)  # new add by luo
+        elif self.neck == 'bnneck':
+            self.bottleneck = nn.BatchNorm1d(self.in_planes*3)
+            self.bottleneck.bias.requires_grad_(False)  # no shift
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)#, bias=False)
+
+            #self.bottleneck.apply(weights_init_kaiming)
+            #self.classifier.apply(weights_init_classifier)
+
+        print(self)
+    
+    def forward(self, x):
+       
+        x = self.base(x)
+        x = torch.permute(x, (0,3,1,2))
+        #pdb.set_trace()
+
+        x_global = x
+
+        ## a1
+        xy1_a1 = x[:, :, 0:4, :]
+        xy2_a1 = x[:, :, 2:6, :]
+        xy3_a1 = x[:, :, 4:8, :]
+        #pdb.set_trace()
+        for att in self.attns1:
+            xy1_a1 = xy1_a1 + att(xy1_a1)
+            xy2_a1 = xy2_a1 + att(xy2_a1)
+            xy3_a1 = xy3_a1 + att(xy3_a1)
+            #
+            #xy1_a1 = self.dp2d1(xy1_a1)
+            #xy2_a1 = self.dp2d2(xy2_a1)
+            #xy3_a1 = self.dp2d3(xy3_a1)
+        xy1_a1 = self.dp2d1(xy1_a1)
+        xy2_a1 = self.dp2d2(xy2_a1)
+        xy3_a1 = self.dp2d3(xy3_a1)
+        xy_a1 = torch.cat( (xy1_a1, xy2_a1, xy3_a1), dim=2)
+
+        ## a2
+        xy1_a2 = x[:, :, 0:4, :]
+        xy2_a2 = x[:, :, 2:6, :]
+        xy3_a2 = x[:, :, 4:8, :]
+        #pdb.set_trace()
+        for att in self.attns2:
+            xy1_a2 = xy1_a2 + att(xy1_a2)
+            xy2_a2 = xy2_a2 + att(xy2_a2)
+            xy3_a2 = xy3_a2 + att(xy3_a2)
+            #
+            #xy1_a2 = self.dp2d1(xy1_a2)
+            #xy2_a2 = self.dp2d2(xy2_a2)
+            #xy3_a2 = self.dp2d3(xy3_a2)
+        xy1_a2 = self.dp2d1(xy1_a2)
+        xy2_a2 = self.dp2d2(xy2_a2)
+        xy3_a2 = self.dp2d3(xy3_a2)
+        xy_a2 = torch.cat( (xy1_a2, xy2_a2, xy3_a2), dim=2)
+
+        ## a3
+        xy1_a3 = x[:, :, 0:4, :]
+        xy2_a3 = x[:, :, 2:6, :]
+        xy3_a3 = x[:, :, 4:8, :]
+        #pdb.set_trace()
+        for att in self.attns3:
+            xy1_a3 = xy1_a3 + att(xy1_a3)
+            xy2_a3 = xy2_a3 + att(xy2_a3)
+            xy3_a3 = xy3_a3 + att(xy3_a3)
+            #
+            #xy1_a3 = self.dp2d1(xy1_a3)
+            #xy2_a3 = self.dp2d2(xy2_a3)
+            #xy3_a3 = self.dp2d3(xy3_a3)
+        xy1_a3 = self.dp2d1(xy1_a3)
+        xy2_a3 = self.dp2d2(xy2_a3)
+        xy3_a3 = self.dp2d3(xy3_a3)
+        xy_a3 = torch.cat( (xy1_a3, xy2_a3, xy3_a3), dim=2)
+
+
+        ## a1
+        xx1_a1 = x[:, :, :, 0:4]
+        xx2_a1 = x[:, :, :, 2:6]
+        xx3_a1 = x[:, :, :, 4:8]
+        for att in self.attns1:
+            xx1_a1 = xx1_a1 + att(xx1_a1)
+            xx2_a1 = xx2_a1 + att(xx2_a1)
+            xx3_a1 = xx3_a1 + att(xx3_a1)
+            #
+            #xx1_a1 = self.dp2d1(xx1_a1)
+            #xx2_a1 = self.dp2d2(xx2_a1)
+            #xx3_a1 = self.dp2d3(xx3_a1)
+        xx1_a1 = self.dp2d1(xx1_a1)
+        xx2_a1 = self.dp2d2(xx2_a1)
+        xx3_a1 = self.dp2d3(xx3_a1)
+        xx_a1 = torch.cat( (xx1_a1, xx2_a1, xx3_a1), dim=3)
+
+        ## a2
+        xx1_a2 = x[:, :, :, 0:4]
+        xx2_a2 = x[:, :, :, 2:6]
+        xx3_a2 = x[:, :, :, 4:8]
+        for att in self.attns2:
+            xx1_a2 = xx1_a2 + att(xx1_a2)
+            xx2_a2 = xx2_a2 + att(xx2_a2)
+            xx3_a2 = xx3_a2 + att(xx3_a2)
+            #
+            #xx1_a2 = self.dp2d1(xx1_a2)
+            #xx2_a2 = self.dp2d2(xx2_a2)
+            #xx3_a2 = self.dp2d3(xx3_a2) 
+        xx1_a2 = self.dp2d1(xx1_a2)
+        xx2_a2 = self.dp2d2(xx2_a2)
+        xx3_a2 = self.dp2d3(xx3_a2) 
+        xx_a2 = torch.cat( (xx1_a2, xx2_a2, xx3_a2), dim=3)
+
+        ## a3
+        xx1_a3 = x[:, :, :, 0:4]
+        xx2_a3 = x[:, :, :, 2:6]
+        xx3_a3 = x[:, :, :, 4:8]
+        for att in self.attns3:
+            xx1_a3 = xx1_a3 + att(xx1_a3)
+            xx2_a3 = xx2_a3 + att(xx2_a3)
+            xx3_a3 = xx3_a3 + att(xx3_a3)
+            #
+            #xx1_a3 = self.dp2d1(xx1_a3)
+            #xx2_a3 = self.dp2d2(xx2_a3)
+            #xx3_a3 = self.dp2d3(xx3_a3)
+        xx1_a3 = self.dp2d1(xx1_a3)
+        xx2_a3 = self.dp2d2(xx2_a3)
+        xx3_a3 = self.dp2d3(xx3_a3)
+        xx_a3 = torch.cat( (xx1_a3, xx2_a3, xx3_a3), dim=3)
+
+        xy = xy_a1 + xy_a2 + xy_a3
+        xx = xx_a1 + xx_a2 + xx_a3
+
+
+        feat = torch.cat( ( self.gap(x).view(x.shape[0], x.shape[1]), 
+                            self.gap(xy).view(x.shape[0], x.shape[1]),
+                            self.gap(xx).view(x.shape[0], x.shape[1]),
+                           ), dim=1 )
+
+        #if self.neck == 'no':
+        #    feat = torch.cat( (global_feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+        #el
+        #if self.neck == 'bnneck':
+        #    feat = self.bottleneck(feat)
+            
+        if self.training:
+            att_gfeat = []
+            att_cls_score = []
+            for i in range(len(self.att_num_classes)):
+                att_cls_score.append(self.attClassifier[i](feat))
+            ####
+            cls_score = self.classifier(feat)
+            return cls_score, feat, att_cls_score, att_gfeat  # global feature for triplet loss
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return feat
+
+    def load_param(self, trained_path):
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
+        for i in param_dict:
+            #print(i)
+            if 'classifier' in i:
+                continue
+            self.state_dict()[i].copy_(param_dict[i])
+        ###
+
+
+
+
+
+
+
+# PP with different part number 
+class ParallelFeatV6(nn.Module):
+    in_planes = 2048
+
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice, modality, num_attns=3, attconf='gcgemha', part=3):
+        super(ParallelFeatV6, self).__init__()
+
+        self.base, self.in_planes = get_base_model("_".join(model_name.split("_")[1::]))
+        self.model_name = model_name
+
+        # part number conf
+        self.partConf = [[0, 4], [2, 6], [4, 8]] # default is 3
+        if part==2:
+            self.partConf = [[0, 6], [2, 8]] # 2
+        elif part==4:
+            self.partConf = [[0, 3], [2, 5], [3, 6], [5, 8]] # 4
+        elif part==5:
+            self.partConf = [[0, 3], [1, 4], [3, 6], [4, 7], [5, 8]] # 5
+        elif part==6:
+            self.partConf = [[0, 3], [1, 4], [2, 5], [3, 6], [4, 7], [5, 8]] # 6
+
+        # freeze backbone
+        #for param in self.base.parameters():
+        #    param.requires_grad = False
+        #          gc ge mha
+        indatts = [0, 1, 2]
+        if attconf == 'gcmhage':
+            indatts = [0, 2, 1]
+        elif attconf == 'gegcmha':
+            indatts = [1, 0, 2]
+        elif attconf == 'gemhagc':
+            indatts = [2, 0, 1]
+        elif attconf == 'mhagcge':
+            indatts = [1, 2, 0]
+        elif attconf == 'mhagegc':
+            indatts = [2, 1, 0]
+
+
+        self.num_attns = num_attns
+        self.attns1 = nn.ModuleList()
+        for i in range(self.num_attns):
+            if i % 3 == indatts[2]: #2:
+                self.attns1.append(MobileAttention(1024,1024))       
+            elif i % 3 == indatts[1]: #1:
+                self.attns1.append(GatherExcite(1024))
+            else:
+                self.attns1.append(GlobalContext(1024))
+        self.attns2 = nn.ModuleList()
+        for i in range(self.num_attns):
+            if i % 3 == indatts[2]: #2:
+                self.attns2.append(MobileAttention(1024,1024))       
+            elif i % 3 == indatts[1]: #1:
+                self.attns2.append(GatherExcite(1024))
+            else:
+                self.attns2.append(GlobalContext(1024)) 
+        self.attns3 = nn.ModuleList()
+        for i in range(self.num_attns):
+            if i % 3 == indatts[2]: #2:
+                self.attns3.append(MobileAttention(1024,1024))       
+            elif i % 3 == indatts[1]: #1:
+                self.attns3.append(GatherExcite(1024))
+            else:
+                self.attns3.append(GlobalContext(1024))
+            ####
+        ####
+
+        self.dp2d = []
+        for i in range(part):
+            self.dp2d.append(nn.Dropout2d(0.03125)) # ori
+
+
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        # self.gap = nn.AdaptiveMaxPool2d(1)
+        self.num_classes = num_classes
+        self.neck = neck
+        self.neck_feat = neck_feat
+        self.modality = modality
+
+        if self.neck == 'no':
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)
+            # self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)     # new add by luo
+            # self.classifier.apply(weights_init_classifier)  # new add by luo
+        elif self.neck == 'bnneck':
+            self.bottleneck = nn.BatchNorm1d(self.in_planes*3)
+            self.bottleneck.bias.requires_grad_(False)  # no shift
+            self.classifier = nn.Linear(self.in_planes*3, self.num_classes)#, bias=False)
+
+            #self.bottleneck.apply(weights_init_kaiming)
+            #self.classifier.apply(weights_init_classifier)
+
+        print(self)
+    
+    def forward(self, x):
+       
+        x = self.base(x)
+        x = torch.permute(x, (0,3,1,2))
+        #pdb.set_trace()
+
+        x_global = x
+
+        ## a1
+        #xy1_a1 = x[:, :, 0:4, :]
+        #xy2_a1 = x[:, :, 2:6, :]
+        #xy3_a1 = x[:, :, 4:8, :]
+        xy_a1 = []
+        for i, j in self.partConf:
+            xy_a1.append(x[:, :, i:j, :])
+        #pdb.set_trace()
+        for att in self.attns1:
+            #xy1_a1 = xy1_a1 + att(xy1_a1)
+            #xy2_a1 = xy2_a1 + att(xy2_a1)
+            #xy3_a1 = xy3_a1 + att(xy3_a1)
+            for i in range(len(xy_a1)):
+                xy_a1[i] = xy_a1[i] + att(xy_a1[i])
+            #
+            #xy1_a1 = self.dp2d1(xy1_a1)
+            #xy2_a1 = self.dp2d2(xy2_a1)
+            #xy3_a1 = self.dp2d3(xy3_a1)
+        ###
+        #xy1_a1 = self.dp2d1(xy1_a1)
+        #xy2_a1 = self.dp2d2(xy2_a1)
+        #xy3_a1 = self.dp2d3(xy3_a1)
+        for i in range(len(xy_a1)):
+            xy_a1[i] = self.dp2d[i](xy_a1[i])
+        xy_a1 = torch.cat( xy_a1, dim=2)
+
+        ## a2
+        #xy1_a2 = x[:, :, 0:4, :]
+        #xy2_a2 = x[:, :, 2:6, :]
+        #xy3_a2 = x[:, :, 4:8, :]
+        #pdb.set_trace()
+        xy_a2 = []
+        for i, j in self.partConf:
+            xy_a2.append(x[:, :, i:j, :])
+        for att in self.attns2:
+            #xy1_a2 = xy1_a2 + att(xy1_a2)
+            #xy2_a2 = xy2_a2 + att(xy2_a2)
+            #xy3_a2 = xy3_a2 + att(xy3_a2)
+            #
+            for i in range(len(xy_a2)):
+                xy_a2[i] = xy_a2[i] + att(xy_a2[i])
+            #xy1_a2 = self.dp2d1(xy1_a2)
+            #xy2_a2 = self.dp2d2(xy2_a2)
+            #xy3_a2 = self.dp2d3(xy3_a2)
+        #xy1_a2 = self.dp2d1(xy1_a2)
+        #xy2_a2 = self.dp2d2(xy2_a2)
+        #xy3_a2 = self.dp2d3(xy3_a2)
+        #xy_a2 = torch.cat( (xy1_a2, xy2_a2, xy3_a2), dim=2)
+        for i in range(len(xy_a2)):
+            xy_a2[i] = self.dp2d[i](xy_a2[i])
+        xy_a2 = torch.cat( xy_a2, dim=2)
+
+
+        ## a3
+        #xy1_a3 = x[:, :, 0:4, :]
+        #xy2_a3 = x[:, :, 2:6, :]
+        #xy3_a3 = x[:, :, 4:8, :]
+        xy_a3 = []
+        for i, j in self.partConf:
+            xy_a3.append(x[:, :, i:j, :])
+        #pdb.set_trace()
+        for att in self.attns3:
+            #xy1_a3 = xy1_a3 + att(xy1_a3)
+            #xy2_a3 = xy2_a3 + att(xy2_a3)
+            #xy3_a3 = xy3_a3 + att(xy3_a3)
+            for i in range(len(xy_a3)):
+                xy_a3[i] = xy_a3[i] + att(xy_a3[i])
+            #
+            #xy1_a3 = self.dp2d1(xy1_a3)
+            #xy2_a3 = self.dp2d2(xy2_a3)
+            #xy3_a3 = self.dp2d3(xy3_a3)
+        #xy1_a3 = self.dp2d1(xy1_a3)
+        #xy2_a3 = self.dp2d2(xy2_a3)
+        #xy3_a3 = self.dp2d3(xy3_a3)
+        #xy_a3 = torch.cat( (xy1_a3, xy2_a3, xy3_a3), dim=2)
+        for i in range(len(xy_a3)):
+            xy_a3[i] = self.dp2d[i](xy_a3[i])
+        xy_a3 = torch.cat( xy_a3, dim=2)
+
+
+
+        ## a1
+        #xx1_a1 = x[:, :, :, 0:4]
+        #xx2_a1 = x[:, :, :, 2:6]
+        #xx3_a1 = x[:, :, :, 4:8]
+        xx_a1 = []
+        for i, j in self.partConf:
+            xx_a1.append(x[:, :, :, i:j])
+        for att in self.attns1:
+            #xx1_a1 = xx1_a1 + att(xx1_a1)
+            #xx2_a1 = xx2_a1 + att(xx2_a1)
+            #xx3_a1 = xx3_a1 + att(xx3_a1)
+            for i in range(len(xx_a1)):
+                xx_a1[i] = xx_a1[i] + att(xx_a1[i])
+            #
+            #xx1_a1 = self.dp2d1(xx1_a1)
+            #xx2_a1 = self.dp2d2(xx2_a1)
+            #xx3_a1 = self.dp2d3(xx3_a1)
+        #xx1_a1 = self.dp2d1(xx1_a1)
+        #xx2_a1 = self.dp2d2(xx2_a1)
+        #xx3_a1 = self.dp2d3(xx3_a1)
+        #xx_a1 = torch.cat( (xx1_a1, xx2_a1, xx3_a1), dim=3)
+        for i in range(len(xx_a1)):
+            xx_a1[i] = self.dp2d[i](xx_a1[i])
+        xx_a1 = torch.cat( xx_a1, dim=2)
+
+
+        ## a2
+        #xx1_a2 = x[:, :, :, 0:4]
+        #xx2_a2 = x[:, :, :, 2:6]
+        #xx3_a2 = x[:, :, :, 4:8]
+        xx_a2 = []
+        for i, j in self.partConf:
+            xx_a2.append(x[:, :, :, i:j])
+        for att in self.attns2:
+            #xx1_a2 = xx1_a2 + att(xx1_a2)
+            #xx2_a2 = xx2_a2 + att(xx2_a2)
+            #xx3_a2 = xx3_a2 + att(xx3_a2)
+            for i in range(len(xx_a2)):
+                xx_a2[i] = xx_a2[i] + att(xx_a2[i])
+            #
+            #xx1_a2 = self.dp2d1(xx1_a2)
+            #xx2_a2 = self.dp2d2(xx2_a2)
+            #xx3_a2 = self.dp2d3(xx3_a2) 
+        #xx1_a2 = self.dp2d1(xx1_a2)
+        #xx2_a2 = self.dp2d2(xx2_a2)
+        #xx3_a2 = self.dp2d3(xx3_a2) 
+        #xx_a2 = torch.cat( (xx1_a2, xx2_a2, xx3_a2), dim=3)
+        for i in range(len(xx_a2)):
+            xx_a2[i] = self.dp2d[i](xx_a2[i])
+        xx_a2 = torch.cat( xx_a2, dim=2)
+
+
+        ## a3
+        #xx1_a3 = x[:, :, :, 0:4]
+        #xx2_a3 = x[:, :, :, 2:6]
+        #xx3_a3 = x[:, :, :, 4:8]
+        xx_a3 = []
+        for i, j in self.partConf:
+            xx_a3.append(x[:, :, :, i:j])
+        for att in self.attns3:
+            #xx1_a3 = xx1_a3 + att(xx1_a3)
+            #xx2_a3 = xx2_a3 + att(xx2_a3)
+            #xx3_a3 = xx3_a3 + att(xx3_a3)
+            for i in range(len(xx_a3)):
+                xx_a3[i] = xx_a3[i] + att(xx_a3[i])
+            #
+            #xx1_a3 = self.dp2d1(xx1_a3)
+            #xx2_a3 = self.dp2d2(xx2_a3)
+            #xx3_a3 = self.dp2d3(xx3_a3)
+        #xx1_a3 = self.dp2d1(xx1_a3)
+        #xx2_a3 = self.dp2d2(xx2_a3)
+        #xx3_a3 = self.dp2d3(xx3_a3)
+        #xx_a3 = torch.cat( (xx1_a3, xx2_a3, xx3_a3), dim=3)
+        for i in range(len(xx_a3)):
+            xx_a3[i] = self.dp2d[i](xx_a3[i])
+        xx_a3 = torch.cat( xx_a3, dim=2)
+
+
+        xy = xy_a1 + xy_a2 + xy_a3
+        xx = xx_a1 + xx_a2 + xx_a3
+
+
+        feat = torch.cat( ( self.gap(x).view(x.shape[0], x.shape[1]), 
+                            self.gap(xy).view(x.shape[0], x.shape[1]),
+                            self.gap(xx).view(x.shape[0], x.shape[1]),
+                           ), dim=1 )
+
+        #if self.neck == 'no':
+        #    feat = torch.cat( (global_feat, self.gap(x).view(x.shape[0], -1)), dim=1 )
+        #el
+        #if self.neck == 'bnneck':
+        #    feat = self.bottleneck(feat)
+            
+        if self.training:
+            cls_score = self.classifier(feat)
+            return cls_score, feat  # global feature for triplet loss
+        else:
+            if self.neck_feat == 'after':
+                # print("Test with feature after BN")
+                return feat
+            else:
+                # print("Test with feature before BN")
+                return feat
+
+    def load_param(self, trained_path):
+        param_dict = torch.load(trained_path)['model']
+        #pdb.set_trace()
+        for i in param_dict:
+            #print(i)
+            if 'classifier' in i:
+                continue
+            self.state_dict()[i].copy_(param_dict[i])
+        ###
+
+
