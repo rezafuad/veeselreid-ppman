@@ -26,6 +26,35 @@ some vessel parts and can distinguish between vessel IDs.
 
 ![Comparison with SOTA](./comparison-sota.png)
 
+## Dataset Directory format
+
+This project follows the directory format described by the original [MultiModal Vehicle ReID code](https://github.com/ttaalle/multi-modal-vehicle-Re-ID), which is:
+
+```
+.
+└── data/
+    ├── boundingbox_train
+    │   ├── 0000_c002_01_T_20220105_11_04_07_484171.jpg 
+    │   ├── 0000_c005_01_T_20220211_12_14_53_760375.jpg
+    │   ...
+    │   ├── 2399_c006_02_T_20211125_12_51_16_917779.jpg
+    │   └── 2399_c007_01_O_20220710_13_47_28_361375.jpg 
+    ├── boundingbox_test
+    │   ├── 0002_c001_01_O_20221023_08_15_03_609375.jpg
+    │   ├── 0002_c001_02_T_20221023_08_15_02_296875.jpg
+    │   ...
+    │   ├── 2398_c007_13_T_20190809_11_04_12_299375.jpg
+    │   └── 2398_c007_14_O_20190811_22_22_27_804375.jpg
+    └── query/
+        ├── 0002_c001_01_O_20221023_08_15_03_609375.jpg
+        ├── 0002_c003_01_O_20210624_23_07_45_611000.jpg
+        ...
+        ├── 2398_c006_02_T_20190513_05_45_13_153908.jpg
+        └── 2398_c007_05_T_20190811_22_22_31_929375.jpg
+```
+
+
+
 
 ## Training 
 
