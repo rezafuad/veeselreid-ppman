@@ -5,18 +5,20 @@
 """
 #from .cuhk03 import CUHK03
 from .dukemtmcreid import DukeMTMCreID
-from .market1501 import Market1501
+from .market1501 import Market1501, Market1501V2
 from .msmt17 import MSMT17
-from .dataset_loader import ImageDataset
+from .dataset_loader import ImageDataset, ImageDatasetAtt
 from .veri import Veri
 from .vehicleid import Vehicleid
 from .cityflow import Cityflow
 from .irour    import Irour
 from .rgbour    import Rgbour
 from .rgbir    import Rgbir
+from .vesselatt import VesselAtt, VesselAttV2
 
 __factory = {
     'market1501': Market1501,
+    'market1501v2': Market1501V2,
   #  'cuhk03': CUHK03,
     'dukemtmc': DukeMTMCreID,
     'msmt17': MSMT17,
@@ -26,6 +28,8 @@ __factory = {
     'irour':Irour,
     'rgbour':Rgbour,
     'rgbir':Rgbir,
+    'vesselatt': VesselAtt,
+    'vesselattv2': VesselAttV2,
 }
 
 

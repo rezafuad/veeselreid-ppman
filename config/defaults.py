@@ -43,6 +43,14 @@ _C.MODEL.METRIC_LOSS_TYPE = 'triplet'
 # If train with label smooth, options: 'on', 'off'
 _C.MODEL.IF_LABELSMOOTH = 'on'
 
+# num att 
+_C.MODEL.NUM_ATT_LAYERS = 2
+
+# self attention config
+_C.MODEL.SACONF = 'gcgemha'
+
+# part pooling div num (1-6), 1 = no part pooling
+_C.MODEL.PPDIV = 1
 
 # -----------------------------------------------------------------------------
 # INPUT
@@ -62,6 +70,14 @@ _C.INPUT.PIXEL_MEAN = [0.485, 0.456, 0.406]
 _C.INPUT.PIXEL_STD = [0.229, 0.224, 0.225]
 # Value of padding size
 _C.INPUT.PADDING = 10
+# Input Modality (rgb, rgbn)
+_C.INPUT.MODALITY = 'rgb'
+# Aligned the image 
+_C.INPUT.ALIGNED = 'no'
+# Use additional autoaugment method 
+_C.INPUT.AUTOAUGMENT = 'no'
+# Use additional randaugment method 
+_C.INPUT.RANDAUGMENT = 'no'
 
 # -----------------------------------------------------------------------------
 # Dataset
@@ -71,6 +87,13 @@ _C.DATASETS = CN()
 _C.DATASETS.NAMES = ('market1501')
 # Root directory where datasets should be used (and downloaded if not found)
 _C.DATASETS.ROOT_DIR = ('./data')
+# Root directory 
+_C.DATASETS.ATTR_ROOT_DIR = ('./data')
+# Number of classes (default is qwen3)
+_C.DATASETS.ATTR_CLASSES = [19, 3, 7, 8, 4, 3, 3, 6, 3, 30 ]
+# Attribute used in training
+_C.DATASETS.ATTR_USED = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
 
 # -----------------------------------------------------------------------------
 # DataLoader

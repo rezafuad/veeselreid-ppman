@@ -13,7 +13,7 @@ from utils.reid_metric import R1_mAP, R1_mAP_reranking
 
 
 def create_supervised_evaluator(model, metrics,
-                                device=None):
+                                device=None, modality='rgb'):
     """
     Factory function for creating an evaluator for supervised models
 
@@ -33,12 +33,17 @@ def create_supervised_evaluator(model, metrics,
     def _inference(engine, batch):
         model.eval()
         with torch.no_grad():
-            data1, data2, data3, pids, camids = batch
+            if modality == 'rgb':
+                data1, pids, camids = batch
+            else:
+                data1, data2, pids, camids = batch
             data1 = data1.to(device) if torch.cuda.device_count() >= 1 else data1
-            data2 = data2.to(device) if torch.cuda.device_count() >= 1 else data2
-            data3 = data3.to(device) if torch.cuda.device_count() >= 1 else data3
-            #feat = model(data1, data2, data3)
-            feat = model(data1)
+            if modality != 'rgb':
+                data2 = data2.to(device) if torch.cuda.device_count() >= 1 else data2
+            if modality == 'rgb':
+                feat = model(data1)
+            else:
+                feat = model(data1, data2)
             return feat, pids, camids
 
     engine = Engine(_inference)

@@ -34,8 +34,9 @@ def graph(x1, x2, x3):
     aaaa = torch.from_numpy(data['L1']).cuda().float()
     bbbb = torch.trace(feat23.t().mm(aaaa).mm(feat23))
     return bbbb
+
 def create_supervised_trainer(model, optimizer, loss_fn,
-                              device=None):
+                              device=None, attributes=False, used_attributes=[]):
     """
     Factory function for creating a trainer for supervised models
 
@@ -57,36 +58,54 @@ def create_supervised_trainer(model, optimizer, loss_fn,
     def _update(engine, batch):
         model.train()
         optimizer.zero_grad()
-        img1, img2, img3, target = batch
+        #pdb.set_trace()
+        if attributes:
+            img1, cls, target = batch
+        else:
+            img1, target = batch
         #pdb.set_trace()
         img1 = img1.to(device) if torch.cuda.device_count() >= 1 else img1
-        img2 = img2.to(device) if torch.cuda.device_count() >= 1 else img2
-        img3 = img3.to(device) if torch.cuda.device_count() >= 1 else img3
-        #pdb.set_trace()
         target = target.to(device) if torch.cuda.device_count() >= 1 else target
-       # score, feat= model(img1)
-       # score1, feat1, score2, feat2 = model(img1, img2, img3)
-        score1, feat1, score2, feat2, score4, feat4  = model(img1, img2, img3)
-        #score = score1 + score2
-        score = score1 + score2 + score4
-        #score = score1 + score2 + score3 + score4 
-       # loss = loss_fn(score, feat, target)
-        loss = loss_fn(score1, feat1, target)+ loss_fn(score2, feat2, target)+ loss_fn(score4, feat4, target) + 0.001 *(32-(normalize(score1) * normalize(score2)).sum())
-        #+ 0.001 *(16-(normalize(score2) * normalize(score3)).sum())
-        #+ loss_fn(score4, feat4, target) + 0.001 *(16-(normalize(score2) * normalize(score3)).sum())
-       # loss = loss_fn(score1, feat1, target)+ loss_fn(score2, feat2, target)+ loss_fn(score3, feat3, target)
-        #
-        #0.001 *(16-(normalize(score1) * normalize(score2) * normalize(score3)).sum()) + 
-        #loss = loss_fn(score1, feat1, target)+ loss_fn(score2, feat2, target)+ loss_fn(score3, feat3, target) + loss_fn(score4, feat4, target)
-        # + 0.001 *(16-(normalize(score1) * normalize(score2) * normalize(score3)).sum())
-        #+ 0* graph(feat1, feat2, feat3)
-        #+ 0.001 *(64-(normalize(score2) * normalize(score3)).sum())
+        if attributes:
+            cls = cls.to(device) if torch.cuda.device_count() >= 1 else cls
+        
+        if attributes:
+            score1, feat1, score2, feat2 = model(img1)
+        else:
+            score1, feat1 = model(img1)
+
+        # if with att then score1 and feat1 in list
+        if attributes:
+            #pdb.set_trace()
+            loss = loss_fn(score1, feat1, cls)
+            for i in used_attributes: #range(len(score2)):
+                #print(i, score2[i].shape, target[:,i])
+                #loss += 0.001*F.cross_entropy(score2[i], target[:, i])
+                #loss += 0.0025*F.cross_entropy(score2[i], target[:, i])
+                #loss += 0.005*F.cross_entropy(score2[i], target[:, i])
+                #loss += 0.0075*F.cross_entropy(score2[i], target[:, i])
+                #loss += 0.01*F.cross_entropy(score2[i], target[:, i])
+                #loss += 0.0125*F.cross_entropy(score2[i], target[:, i])
+                #loss += 0.015*F.cross_entropy(score2[i], target[:, i])
+                loss += 0.0175*F.cross_entropy(score2[i], target[:, i])
+                #loss += 0.02*F.cross_entropy(score2[i], target[:, i])
+                #loss += 0.0225*F.cross_entropy(score2[i], target[:, i])
+                #loss += 0.025*F.cross_entropy(score2[i], target[:, i])
+                #loss += 0.5*F.cross_entropy(score2[i], target[:, i])
+            ####
+        else:
+            loss = loss_fn(score1, feat1, target)
+        ####
+
+       
+        score = score1 
 
         #pdb.set_trace()
         loss.backward()
         optimizer.step()
         # compute acc
-        acc = (score.max(1)[1] == target).float().mean()
+        true_class = cls if attributes else target
+        acc = (score.max(1)[1] == true_class).float().mean()
         return loss.item(), acc.item()
 
     return Engine(_update)
@@ -136,7 +155,7 @@ def create_supervised_trainer_with_center(model, center_criterion, optimizer, op
 
 
 def create_supervised_evaluator(model, metrics,
-                                device=None):
+                                device=None, modality='rgb'):
     """
     Factory function for creating an evaluator for supervised models
 
@@ -156,12 +175,16 @@ def create_supervised_evaluator(model, metrics,
     def _inference(engine, batch):
         model.eval()
         with torch.no_grad():
-            data1, data2, data3, pids, camids = batch
+            if modality == 'rgb':
+                data1, pids, camids = batch
+            else:
+                data1, data2, pids, camids = batch
             data1 = data1.to(device) if torch.cuda.device_count() >= 1 else data1
-            data2 = data2.to(device) if torch.cuda.device_count() >= 1 else data2
-            data3 = data3.to(device) if torch.cuda.device_count() >= 1 else data3
-            feat = model(data1, data2, data3)
-           # feat = model(data1)
+            if modality == 'rgbn':
+                data2 = data2.to(device) if torch.cuda.device_count() >= 1 else data2
+            
+            feat = model(data1, data2) if modality == 'rgbn' else model(data1)
+            
             return feat, pids, camids
 
     engine = Engine(_inference)
@@ -193,13 +216,15 @@ def do_train(
 
     logger = logging.getLogger("reid_baseline.train")
     logger.info("Start training")
-    trainer = create_supervised_trainer(model, optimizer, loss_fn, device=device)
+    trainer = create_supervised_trainer(model, optimizer, loss_fn, device=device, attributes=True if cfg.DATASETS.NAMES in ['vesselatt', 'vesselattv2'] else False)
     evaluator = create_supervised_evaluator(model, metrics={'r1_mAP': R1_mAP(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)}, device=device)
-    checkpointer = ModelCheckpoint(output_dir, cfg.MODEL.NAME, checkpoint_period, n_saved=10, require_empty=False, save_as_state_dict=False)
+    #checkpointer = ModelCheckpoint(output_dir, cfg.MODEL.NAME, checkpoint_period, n_saved=10, require_empty=False, save_as_state_dict=False)
+    gst = lambda *_: trainer.state.epoch
+    checkpointer = ModelCheckpoint(output_dir, cfg.MODEL.NAME, score_name='avg_acc', global_step_transform=gst, greater_or_equal=True, n_saved=120)
     timer = Timer(average=True)
 
-    trainer.add_event_handler(Events.EPOCH_COMPLETED, checkpointer, {'model': model.state_dict(),
-                                                                     'optimizer': optimizer.state_dict()})
+    trainer.add_event_handler(Events.EPOCH_COMPLETED, checkpointer, {'model': model, #.state_dict(),
+                                                                     'optimizer': optimizer}) #.state_dict()})
     timer.attach(trainer, start=Events.EPOCH_STARTED, resume=Events.ITERATION_STARTED,
                  pause=Events.ITERATION_COMPLETED, step=Events.ITERATION_COMPLETED)
 
@@ -228,6 +253,12 @@ def do_train(
     # adding handlers using `trainer.on` decorator API
     @trainer.on(Events.EPOCH_COMPLETED)
     def print_times(engine):
+        iter = (engine.state.iteration - 1) % len(train_loader) + 1
+        logger.info("Epoch[{}] Iteration[{}/{}] Loss: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
+                        .format(engine.state.epoch, iter, len(train_loader),
+                                engine.state.metrics['avg_loss'], engine.state.metrics['avg_acc'],
+                                scheduler.get_lr()[0]))
+        #####
         logger.info('Epoch {} done. Time per batch: {:.3f}[s] Speed: {:.1f}[samples/s]'
                     .format(engine.state.epoch, timer.value() * timer.step_count,
                             train_loader.batch_size / timer.value()))

@@ -53,6 +53,11 @@ class R1_mAP(Metric):
         distmat = distmat.cpu().numpy()
         cmc, mAP = eval_func(distmat, q_pids, g_pids, q_camids, g_camids)
 
+        # save feat for demo 
+        results = {'gallery_f': gf.cpu().numpy(), 'gallery_label': g_pids, 'gallery_cam': g_camids, 'query_f': qf.cpu().numpy(), 'query_label': q_pids, 'query_cam': q_camids,  'distmat': distmat} 
+        import scipy.io
+        scipy.io.savemat('pytorch_result.mat', results)
+
         return cmc, mAP
 
 

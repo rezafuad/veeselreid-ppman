@@ -22,7 +22,7 @@ def eval_func(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=50):
     query_arg = np.argsort(q_pids, axis=0)
     result = g_pids[indices]
     gall_re = result[query_arg]
-    gall_re = gall_re.astype(np.str)
+    gall_re = gall_re.astype(str)#np.str)
     #pdb.set_trace()
     
     result = gall_re[:,:100]

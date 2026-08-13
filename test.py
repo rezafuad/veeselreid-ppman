@@ -39,10 +39,10 @@ def main():
     cfg.freeze()
 
     output_dir = cfg.OUTPUT_DIR
-    if output_dir and not os.path.exists(output_dir):
-        mkdir(output_dir)
+    #if output_dir and not os.path.exists(output_dir):
+    #    mkdir(output_dir)
 
-    logger = setup_logger("reid_baseline", output_dir, 0)
+    logger = setup_logger("reid_baseline", output_dir, 0, filename='test-results.txt')
     logger.info("Using {} GPUS".format(num_gpus))
     logger.info(args)
 

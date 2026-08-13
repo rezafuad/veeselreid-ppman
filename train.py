@@ -28,7 +28,7 @@ def train(cfg):
     train_loader, val_loader, num_query, num_classes = make_data_loader(cfg)
     #pdb.set_trace()
     # prepare model
-    model = build_model(cfg, num_classes)
+    model = build_model(cfg, num_classes, cfg.DATASETS.ATTR_CLASSES) #num_classes)
     #pdb.set_trace()
     if cfg.MODEL.IF_WITH_CENTER == 'no':
         print('Train without center loss, the loss type is', cfg.MODEL.METRIC_LOSS_TYPE)
@@ -154,4 +154,6 @@ def main():
 
 
 if __name__ == '__main__':
+    #torch.manual_seed(0)#304198519121983)
+    #torch.cuda.manual_seed_all(0)#304198519121983)
     main()
