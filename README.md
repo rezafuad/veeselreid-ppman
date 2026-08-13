@@ -18,3 +18,4 @@ some vessel parts and can distinguish between vessel IDs.
 
 ## Model Architecture
 
+![Model Architecture](./model.png)
