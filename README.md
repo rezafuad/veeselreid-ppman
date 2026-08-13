@@ -33,11 +33,21 @@ To do
 
 ## Testing
 
-To do
+Testing from pretrained weight:
+
+```bash
+python -u test.py --config_file='swinv2_softmax_triplet.yml' MODEL.DEVICE_ID "('0')" DATASETS.NAMES "market1501v2" DATASETS.ROOT_DIR "../data/ShipReID-2400/testing/" MODEL.NAME "parallelfeatV5_swinv2_transformer"  MODEL.NUM_ATT_LAYERS 3 INPUT.SIZE_TRAIN [256,256] INPUT.SIZE_TEST [256,256] TEST.WEIGHT "./shipreid2400_ParallelFeatV5_swinv2_transformer_trial2/parallelfeatV5_swinv2_transformer_checkpoint_179_avg_acc=0.9991.pt" OUTPUT_DIR .
+```
+
+Change the value of `DATASETS.ROOT_DIR` to the dataset directory. 
 
 ## Pretrained Weights
 
-To do
+Currently, only the ShipReID-2400 dataset weight is available. We plan to release all three dataset weights in the future. 
+
+| Dataset | Pretrained weight download link |
+| ------- | ------------------------------- |
+| ShipReID-2400 | [https://drive.google.com/file/d/1Lq65eeMZ-oVoOzZJ9nK_wG_44Ihn2ErF/view?usp=sharing] |
 
 ## Credits
 
